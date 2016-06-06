@@ -76,6 +76,7 @@ class RestServerFeature final
   void prepare() override final;
   void start() override final;
   void stop() override final;
+  void unprepare() override final;
 
  private:
   double _keepAliveTimeout;
