@@ -52,7 +52,7 @@ struct OperationOptions;
 ////////////////////////////////////////////////////////////////////////////////
 
 std::unordered_map<std::string, std::string> getForwardableRequestHeaders(
-    arangodb::HttpRequest* request);
+    GeneralRequest*);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief check if a list of attributes have the same values in two vpack
@@ -129,7 +129,9 @@ int getFilteredDocumentsOnCoordinator(
     std::string const& dbname,
     std::vector<traverser::TraverserExpression*> const& expressions,
     std::unordered_set<std::string>& documentIds,
-    std::unordered_map<std::string, std::shared_ptr<arangodb::velocypack::Buffer<uint8_t>>>& result);
+    std::unordered_map<std::string,
+                       std::shared_ptr<arangodb::velocypack::Buffer<uint8_t>>>&
+        result);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief get a filtered set of edges on Coordinator.
@@ -149,8 +151,8 @@ int getFilteredEdgesOnCoordinator(
 
 int modifyDocumentOnCoordinator(
     std::string const& dbname, std::string const& collname,
-    arangodb::velocypack::Slice const& slice,
-    OperationOptions const& options, bool isPatch,
+    arangodb::velocypack::Slice const& slice, OperationOptions const& options,
+    bool isPatch,
     std::unique_ptr<std::unordered_map<std::string, std::string>>& headers,
     arangodb::GeneralResponse::ResponseCode& responseCode,
     std::unordered_map<int, size_t>& errorCounter,
@@ -168,6 +170,19 @@ int truncateCollectionOnCoordinator(std::string const& dbname,
 ////////////////////////////////////////////////////////////////////////////////
 
 int flushWalOnAllDBServers(bool, bool);
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief compute a shard distribution for a new collection, the list
+/// dbServers must be a list of DBserver ids to distribute across. 
+/// If this list is empty, the complete current list of DBservers is
+/// fetched from ClusterInfo. If shuffle is true, a few random shuffles
+/// are performed before the list is taken. Thus modifies the list.
+////////////////////////////////////////////////////////////////////////////////
+
+std::map<std::string, std::vector<std::string>> distributeShards(
+    uint64_t numberOfShards,
+    uint64_t replicationFactor,
+    std::vector<std::string>& dbServers);
 
 }  // namespace arangodb
 

@@ -1,22 +1,20 @@
-/*jshint browser: true */
-/*jshint unused: false */
-/*global window, Backbone, $, frontendConfig */
-(function() {
-  "use strict";
+/* jshint browser: true */
+/* jshint unused: false */
+/* global window, Backbone, $, frontendConfig */
+(function () {
+  'use strict';
   window.QueryManagementActive = Backbone.Collection.extend({
-
     model: window.queryManagementModel,
 
-    url: function() {
+    url: function () {
       return frontendConfig.basePath + '/_api/query/current';
     },
 
-    killRunningQuery: function(id, callback) {
-      var self = this;
+    killRunningQuery: function (id, callback) {
       $.ajax({
-        url: frontendConfig.basePath + '/_api/query/'+encodeURIComponent(id),
+        url: frontendConfig.basePath + '/_api/query/' + encodeURIComponent(id),
         type: 'DELETE',
-        success: function(result) {
+        success: function (result) {
           callback();
         }
       });

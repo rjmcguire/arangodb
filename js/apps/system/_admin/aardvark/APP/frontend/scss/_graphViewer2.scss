@@ -1,0 +1,95 @@
+.graphContent {
+
+  #graph-container {
+    background-color: $c-white;
+    z-index: 5;
+  }
+
+  #graph-container:-webkit-full-screen {
+    height: 100% !important;
+    width: 100% !important;
+  }
+
+  #graph-container:-moz-full-screen {
+    height: 100% !important;
+    width: 100% !important;
+  }
+
+  #graph-container:-ms-full-screen {
+    height: 100% !important;
+    width: 100% !important;
+  }
+
+  #graph-container:-o-full-screen {
+    height: 100% !important;
+    width: 100% !important;
+  }
+
+  #graph-container:full-screen {
+    height: 100% !important;
+    width: 100% !important;
+  }
+
+  .fa {
+    &.fa-desktop {
+      margin-top: 6px;
+      position: absolute;
+      right: 20px;
+      z-index: 10;
+    }
+  }
+}
+
+.nodeContextMenu {
+
+  position: fixed;
+
+  svg {
+    #wheelnav-nodeContextMenu-title-0 {
+      transform: translate(24px, 14px) scale(.7) !important;
+    }
+
+    #wheelnav-nodeContextMenu-title-0,
+    #wheelnav-nodeContextMenu-title-1,
+    #wheelnav-nodeContextMenu-title-2,
+    #wheelnav-nodeContextMenu-title-3 {
+      fill: $c-white;
+
+      &:hover {
+        fill: $c-positive;
+      }
+    }
+  }
+}
+
+#graphSettingsView {
+  background-color: rgba(64, 74, 83, .9);
+  border: 0;
+  border-radius: 0;
+  height: 100%;
+}
+
+#graphSettingsContent {
+  height: 100%;
+  max-width: 50%;
+  min-width: 400px;
+  position: fixed;
+  right: -1px;
+  top: 103px;
+  width: 400px;
+
+  .pure-g {
+    .left {
+      color: $c-white;
+    }
+
+    .pure-u-2-3 {
+      text-align: right;
+    }
+  }
+
+  .pure-table {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}

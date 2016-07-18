@@ -79,6 +79,7 @@ Syncer::Syncer(TRI_vocbase_t* vocbase,
   _localServerIdString = StringUtils::itoa(_localServerId);
 
   _configuration.update(configuration);
+  _useCollectionId = _configuration._useCollectionId;
 
   _masterInfo._endpoint = configuration->_endpoint;
 
@@ -332,6 +333,48 @@ std::string Syncer::getCName(VPackSlice const& slice) const {
   return arangodb::basics::VelocyPackHelper::getStringValue(slice, "cname", "");
 }
 
+///////////////////////////////////////////////////////////////////////////////
+/// @brief extract the collection by either id or name, may return nullptr!
+////////////////////////////////////////////////////////////////////////////////
+  
+TRI_vocbase_col_t* Syncer::getCollectionByIdOrName(TRI_voc_cid_t cid, std::string const& name) { 
+  TRI_vocbase_col_t* idCol = nullptr;
+  TRI_vocbase_col_t* nameCol = nullptr;
+
+  if (_useCollectionId) {
+    idCol = TRI_LookupCollectionByIdVocBase(_vocbase, cid);
+  }
+
+  if (!name.empty()) {
+    // try looking up the collection by name then
+    nameCol = TRI_LookupCollectionByNameVocBase(_vocbase, name);
+  }
+
+  if (idCol != nullptr && nameCol != nullptr) {
+    if (idCol->cid() == nameCol->cid()) {
+      // found collection by id and name, and both are identical!
+      return idCol;
+    } 
+    // found different collections by id and name
+    TRI_ASSERT(!name.empty());
+    if (name[0] == '_') {
+      // system collection. always return collection by name when in doubt
+      return nameCol;
+    }
+
+    // no system collection. still prefer local collection
+    return nameCol;
+  }
+
+  if (nameCol != nullptr) {
+    TRI_ASSERT(idCol == nullptr);
+    return nameCol;
+  }
+ 
+  // may be nullptr
+  return idCol;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief apply the data from a collection dump or the continuous log
 ////////////////////////////////////////////////////////////////////////////////
@@ -439,12 +482,7 @@ int Syncer::createCollection(VPackSlice const& slice, TRI_vocbase_col_t** dst) {
   TRI_col_type_e const type = static_cast<TRI_col_type_e>(VelocyPackHelper::getNumericValue<int>(
       slice, "type", static_cast<int>(TRI_COL_TYPE_DOCUMENT)));
 
-  TRI_vocbase_col_t* col = TRI_LookupCollectionByIdVocBase(_vocbase, cid);
-
-  if (col == nullptr) {
-    // try looking up the collection by name then
-    col = TRI_LookupCollectionByNameVocBase(_vocbase, name);
-  }
+  TRI_vocbase_col_t* col = getCollectionByIdOrName(cid, name);
 
   if (col != nullptr && static_cast<TRI_col_type_t>(col->_type) == static_cast<TRI_col_type_t>(type)) {
     // collection already exists. TODO: compare attributes
@@ -459,7 +497,7 @@ int Syncer::createCollection(VPackSlice const& slice, TRI_vocbase_col_t** dst) {
 
   VPackBuilder merged = VPackCollection::merge(s.slice(), slice, true);
 
-  VocbaseCollectionInfo params(_vocbase, name.c_str(), merged.slice());
+  VocbaseCollectionInfo params(_vocbase, name.c_str(), merged.slice(), true);
 
   col = TRI_CreateCollectionVocBase(_vocbase, params, cid, true);
 
@@ -479,15 +517,7 @@ int Syncer::createCollection(VPackSlice const& slice, TRI_vocbase_col_t** dst) {
 ////////////////////////////////////////////////////////////////////////////////
 
 int Syncer::dropCollection(VPackSlice const& slice, bool reportError) {
-  TRI_voc_cid_t const cid = getCid(slice);
-  TRI_vocbase_col_t* col = TRI_LookupCollectionByIdVocBase(_vocbase, cid);
-
-  if (col == nullptr) {
-    std::string cname = getCName(slice);
-    if (!cname.empty()) {
-      col = TRI_LookupCollectionByNameVocBase(_vocbase, cname);
-    }
-  }
+  TRI_vocbase_col_t* col = getCollectionByIdOrName(getCid(slice), getCName(slice));
 
   if (col == nullptr) {
     if (reportError) {

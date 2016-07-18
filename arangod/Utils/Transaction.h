@@ -26,6 +26,7 @@
 
 #include "Basics/Common.h"
 #include "Basics/Exceptions.h"
+#include "Basics/StringRef.h"
 #include "Cluster/ServerState.h"
 #include "Utils/OperationOptions.h"
 #include "Utils/OperationResult.h"
@@ -168,6 +169,10 @@ class Transaction {
   std::shared_ptr<TransactionContext> transactionContext() const {
     return _transactionContext;
   }
+  
+  inline TransactionContext* transactionContextPtr() const {
+    return _transactionContextPtr;
+  }
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief get (or create) a rocksdb WriteTransaction
@@ -230,7 +235,7 @@ class Transaction {
   //////////////////////////////////////////////////////////////////////////////
 
   bool isSingleOperationTransaction() const {
-    return TRI_IsSingleOperationTransaction(this->getInternals());
+    return TRI_IsSingleOperationTransaction(_trx);
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -297,7 +302,7 @@ class Transaction {
   /// @brief extract the _key attribute from a slice
   //////////////////////////////////////////////////////////////////////////////
 
-  static std::string extractKeyPart(VPackSlice const);
+  static StringRef extractKeyPart(VPackSlice const);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief extract the _id attribute from a slice, and convert it into a 
@@ -343,14 +348,6 @@ class Transaction {
   static VPackSlice extractToFromDocument(VPackSlice);
   
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief quick access to the _rev attribute in a database document
-  /// the document must have at least three attributes: _key, _id, _rev 
-  /// (possibly with _from and _to in between)
-  //////////////////////////////////////////////////////////////////////////////
-  
-  static VPackSlice extractRevFromDocument(VPackSlice);
-
-  //////////////////////////////////////////////////////////////////////////////
   /// @brief extract _key and _rev from a document, in one go
   /// this is an optimized version used when loading collections, WAL 
   /// collection and compaction
@@ -384,13 +381,16 @@ class Transaction {
     auto collection = this->trxCollection(cid);
 
     if (collection == nullptr) {
-      int res = TRI_AddCollectionTransaction(this->getInternals(), cid,
+      int res = TRI_AddCollectionTransaction(_trx, cid,
                                              type,
-                                             this->nestingLevel(), true, true);
+                                             _nestingLevel, true, true);
       if (res != TRI_ERROR_NO_ERROR) {
+        if (res == TRI_ERROR_TRANSACTION_UNREGISTERED_COLLECTION) {
+          THROW_ARANGO_EXCEPTION_MESSAGE(res, std::string(TRI_errno_string(res)) + ": " + collectionName);
+        }
         THROW_ARANGO_EXCEPTION(res);
       }
-      TRI_EnsureCollectionsTransaction(this->getInternals());
+      TRI_EnsureCollectionsTransaction(_trx, _nestingLevel);
       collection = this->trxCollection(cid);
 
       if (collection == nullptr) {
@@ -447,6 +447,19 @@ class Transaction {
   int documentFastPath(std::string const& collectionName,
                        arangodb::velocypack::Slice const value,
                        arangodb::velocypack::Builder& result);
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief return one  document from a collection, fast path
+  ///        If everything went well the result will contain the found document
+  ///        (as an external on single_server)  and this function will return TRI_ERROR_NO_ERROR.
+  ///        If there was an error the code is returned
+  ///        Does not care for revision handling!
+  ///        Must only be called on a local server, not in cluster case!
+  //////////////////////////////////////////////////////////////////////////////
+  
+  int documentFastPathLocal(std::string const& collectionName,
+                            std::string const& key,
+                            TRI_doc_mptr_t* result);
  
   //////////////////////////////////////////////////////////////////////////////
   /// @brief return one or multiple documents from a collection
@@ -577,7 +590,7 @@ class Transaction {
   /// calling this method
   //////////////////////////////////////////////////////////////////////////////
 
-  std::shared_ptr<OperationCursor> indexScan(std::string const& collectionName,
+  std::unique_ptr<OperationCursor> indexScan(std::string const& collectionName,
                                              CursorType cursorType,
                                              IndexHandle const& indexId,
                                              VPackSlice const search,
@@ -632,7 +645,7 @@ class Transaction {
   void buildDocumentIdentity(TRI_document_collection_t* document,
                              VPackBuilder& builder,
                              TRI_voc_cid_t cid,
-                             std::string const& key,
+                             StringRef const& key,
                              VPackSlice const rid,
                              VPackSlice const oldRid,
                              TRI_doc_mptr_t const* oldMptr,
@@ -943,6 +956,28 @@ class Transaction {
 
   std::shared_ptr<TransactionContext> _transactionContext;
 
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief cache for last handed out DocumentDitch
+  //////////////////////////////////////////////////////////////////////////////
+  
+  struct {
+    TRI_voc_cid_t cid = 0;
+    DocumentDitch* ditch = nullptr;
+  }
+  _ditchCache;
+
+  struct {
+    TRI_voc_cid_t cid = 0;
+    std::string name;
+  }
+  _collectionCache;
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief pointer to transaction context (faster than shared ptr)
+  //////////////////////////////////////////////////////////////////////////////
+  
+  TransactionContext* _transactionContextPtr;
+
  public:
   //////////////////////////////////////////////////////////////////////////////
   /// @brief makeNolockHeaders
@@ -969,9 +1004,14 @@ class TransactionBuilderLeaser {
   explicit TransactionBuilderLeaser(arangodb::Transaction*); 
   explicit TransactionBuilderLeaser(arangodb::TransactionContext*); 
   ~TransactionBuilderLeaser();
-  arangodb::velocypack::Builder* builder() const { return _builder; }
-  arangodb::velocypack::Builder* operator->() const { return _builder; }
-  arangodb::velocypack::Builder* get() const { return _builder; }
+  inline arangodb::velocypack::Builder* builder() const { return _builder; }
+  inline arangodb::velocypack::Builder* operator->() const { return _builder; }
+  inline arangodb::velocypack::Builder* get() const { return _builder; }
+  inline arangodb::velocypack::Builder* steal() { 
+    arangodb::velocypack::Builder* res = _builder;
+    _builder = nullptr;
+    return res;
+  }
  private:
   arangodb::TransactionContext* _transactionContext;
   arangodb::velocypack::Builder* _builder;

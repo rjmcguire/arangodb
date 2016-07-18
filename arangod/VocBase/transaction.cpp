@@ -176,6 +176,8 @@ static char const* StatusTransaction(const TRI_transaction_status_e status) {
 static void FreeOperations(TRI_transaction_t* trx) {
   bool const mustRollback = (trx->_status == TRI_TRANSACTION_ABORTED);
   bool const isSingleOperation = IsSingleOperationTransaction(trx);
+      
+  std::unordered_map<TRI_voc_fid_t, std::pair<int64_t, int64_t>> stats;
 
   for (auto& trxCollection : trx->_collections) {
     if (trxCollection->_operations == nullptr) {
@@ -196,7 +198,7 @@ static void FreeOperations(TRI_transaction_t* trx) {
     } else {
       // update datafile statistics for all operations
       // pair (number of dead markers, size of dead markers)
-      std::unordered_map<TRI_voc_fid_t, std::pair<int64_t, int64_t>> stats;
+      stats.clear();
 
       for (auto it = trxCollection->_operations->rbegin();
            it != trxCollection->_operations->rend(); ++it) {
@@ -249,7 +251,7 @@ static void FreeOperations(TRI_transaction_t* trx) {
 ////////////////////////////////////////////////////////////////////////////////
 
 static TRI_transaction_collection_t* FindCollection(
-    const TRI_transaction_t* const trx, const TRI_voc_cid_t cid,
+    TRI_transaction_t const* trx, TRI_voc_cid_t cid,
     size_t* position) {
 
   size_t const n = trx->_collections.size();
@@ -267,7 +269,6 @@ static TRI_transaction_collection_t* FindCollection(
       // found
       return trxCollection;
     }
-
     // next
   }
 
@@ -764,9 +765,8 @@ TRI_transaction_collection_t* TRI_GetCollectionTransaction(
         !HasHint(trx, TRI_TRANSACTION_HINT_NO_USAGE_LOCK)) {
       // not opened. probably a mistake made by the caller
       return nullptr;
-    } else {
-      // ok
     }
+    // ok
   }
 
   // check if access type matches
@@ -1115,7 +1115,7 @@ int TRI_AddOperationTransaction(TRI_transaction_t* trx,
     copy->handle();
   }
 
-  document->setLastRevision(static_cast<TRI_voc_tick_t>(operation.tick), false);
+  document->setLastRevision(operation.rid, false);
 
   TRI_IF_FAILURE("TransactionOperationAtEnd") { return TRI_ERROR_DEBUG; }
 

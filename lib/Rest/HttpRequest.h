@@ -27,18 +27,28 @@
 
 #include "Rest/GeneralRequest.h"
 
-#include "Basics/StringBuffer.h"
 #include "Endpoint/ConnectionInfo.h"
 
 namespace arangodb {
+class RestBatchHandler;
+
+namespace rest {
+class HttpCommTask;
+}
+
 namespace velocypack {
 class Builder;
 struct Options;
 }
 
 class HttpRequest : public GeneralRequest {
- public:
+  friend class rest::HttpCommTask;
+  friend class RestBatchHandler; // TODO must be removed
+
+ private:
   HttpRequest(ConnectionInfo const&, char const*, size_t, bool);
+
+ public:
   ~HttpRequest();
 
  public:
@@ -50,21 +60,24 @@ class HttpRequest : public GeneralRequest {
 
  public:
   // the content length
-  int64_t contentLength() const { return _contentLength; }
+  int64_t contentLength() const override { return _contentLength; }
 
   std::string const& cookieValue(std::string const& key) const;
   std::string const& cookieValue(std::string const& key, bool& found) const;
-  std::unordered_map<std::string, std::string> cookieValues() const { return _cookies; }
+  std::unordered_map<std::string, std::string> cookieValues() const override {
+    return _cookies;
+  }
 
-  std::string const& body() const;
+  std::string const& body() const override;
   void setBody(char const* body, size_t length);
 
   // the request body as VelocyPackBuilder
   std::shared_ptr<arangodb::velocypack::Builder> toVelocyPack(
-      arangodb::velocypack::Options const*);
-  
+      arangodb::velocypack::Options const*) override final;
+
   /// @brief sets a key/value header
-  void setHeader(char const* key, size_t keyLength, char const* value, size_t valueLength);
+  void setHeader(char const* key, size_t keyLength, char const* value,
+                 size_t valueLength);
   /// @brief sets a key-only header
   void setHeader(char const* key, size_t keyLength);
 

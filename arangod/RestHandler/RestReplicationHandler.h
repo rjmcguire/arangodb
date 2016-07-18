@@ -41,12 +41,11 @@ class Transaction;
 
 class RestReplicationHandler : public RestVocbaseBaseHandler {
  public:
-  explicit RestReplicationHandler(HttpRequest*);
-
+  RestReplicationHandler(GeneralRequest*, GeneralResponse*);
   ~RestReplicationHandler();
 
  public:
-  HttpHandler::status_t execute();
+  RestHandler::status execute();
 
  public:
   //////////////////////////////////////////////////////////////////////////////
@@ -186,7 +185,7 @@ class RestReplicationHandler : public RestVocbaseBaseHandler {
   //////////////////////////////////////////////////////////////////////////////
 
   int processRestoreCollectionCoordinator(VPackSlice const&, bool, bool, bool,
-                                          uint64_t, std::string&);
+                                          uint64_t, std::string&, uint64_t);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief restores the indexes of a collection TODO MOVE

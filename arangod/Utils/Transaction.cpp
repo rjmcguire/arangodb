@@ -492,7 +492,8 @@ Transaction::Transaction(std::shared_ptr<TransactionContext> transactionContext)
       _trx(nullptr),
       _vocbase(transactionContext->vocbase()),
       _resolver(nullptr),
-      _transactionContext(transactionContext) {
+      _transactionContext(transactionContext),
+      _transactionContextPtr(transactionContext.get()) {
   TRI_ASSERT(_vocbase != nullptr);
   TRI_ASSERT(_transactionContext != nullptr);
 
@@ -575,6 +576,10 @@ DocumentDitch* Transaction::orderDitch(TRI_voc_cid_t cid) {
   TRI_ASSERT(getStatus() == TRI_TRANSACTION_RUNNING ||
              getStatus() == TRI_TRANSACTION_CREATED);
 
+  if (_ditchCache.cid == cid) {
+    return _ditchCache.ditch;
+  }
+
   TRI_transaction_collection_t* trxCollection = TRI_GetCollectionTransaction(_trx, cid, TRI_TRANSACTION_READ);
 
   if (trxCollection == nullptr) {
@@ -592,6 +597,10 @@ DocumentDitch* Transaction::orderDitch(TRI_voc_cid_t cid) {
   if (ditch == nullptr) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
   }
+
+  _ditchCache.cid = cid;
+  _ditchCache.ditch = ditch;
+
   return ditch;
 }
   
@@ -621,24 +630,24 @@ rocksdb::Transaction* Transaction::rocksTransaction() {
 /// @brief extract the _key attribute from a slice
 ////////////////////////////////////////////////////////////////////////////////
 
-std::string Transaction::extractKeyPart(VPackSlice const slice) {
+StringRef Transaction::extractKeyPart(VPackSlice const slice) {
   // extract _key
   if (slice.isObject()) {
     VPackSlice k = slice.get(StaticStrings::KeyString);
     if (!k.isString()) {
-      return ""; // fail
+      return StringRef(); // fail
     }
-    return k.copyString();
+    return StringRef(k);
   } 
   if (slice.isString()) {
-    std::string key = slice.copyString();
+    StringRef key(slice);
     size_t pos = key.find('/');
-    if (pos != std::string::npos) {
-      key = key.substr(pos + 1);
+    if (pos == std::string::npos) {
+      return key;
     }
-    return key;
+    return key.substr(pos + 1);
   } 
-  return "";
+  return StringRef();
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -653,17 +662,18 @@ std::string Transaction::makeIdFromCustom(CollectionNameResolver const* resolver
 
   uint64_t cid = DatafileHelper::ReadNumber<uint64_t>(id.begin() + 1, sizeof(uint64_t));
   // create a buffer big enough for collection name + _key
-  char buffer[TRI_COL_NAME_LENGTH + TRI_VOC_KEY_MAX_LENGTH + 2];
-  size_t len = resolver->getCollectionNameCluster(&buffer[0], cid);
-  buffer[len] = '/';
+  std::string buffer;
+  buffer.reserve(TRI_COL_NAME_LENGTH + TRI_VOC_KEY_MAX_LENGTH + 2);
+  buffer.append(resolver->getCollectionNameCluster(cid));
+  buffer.append("/");
 
   VPackValueLength keyLength;
   char const* p = key.getString(keyLength);
   if (p == nullptr) {
     THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "invalid _key value");
   }
-  memcpy(&buffer[len + 1], p, static_cast<size_t>(keyLength));
-  return std::string(&buffer[0], static_cast<size_t>(len + 1 + keyLength));
+  buffer.append(p, static_cast<size_t>(keyLength));
+  return buffer;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -728,7 +738,7 @@ std::string Transaction::extractIdString(CollectionNameResolver const* resolver,
   if (slice.isObject()) {
     key = slice.get(StaticStrings::KeyString);
   } else if (base.isObject()) {
-    key = base.get(StaticStrings::KeyString);
+    key = extractKeyFromDocument(base);
   } else if (base.isExternal()) {
     key = base.resolveExternal().get(StaticStrings::KeyString);
   }
@@ -751,12 +761,15 @@ VPackSlice Transaction::extractKeyFromDocument(VPackSlice slice) {
     slice = slice.resolveExternal();
   }
   TRI_ASSERT(slice.isObject());
+
+  if (slice.isEmptyObject()) {
+    return VPackSlice();
+  }
   // a regular document must have at least the three attributes 
   // _key, _id and _rev (in this order). _key must be the first attribute
   // however this method may also be called for remove markers, which only
   // have _key and _rev. therefore the only assertion that we can make
   // here is that the document at least has two attributes 
-  TRI_ASSERT(slice.length() >= 2); 
 
   uint8_t const* p = slice.begin() + slice.findDataOffset(slice.head());
 
@@ -782,9 +795,12 @@ VPackSlice Transaction::extractIdFromDocument(VPackSlice slice) {
     slice = slice.resolveExternal();
   }
   TRI_ASSERT(slice.isObject());
+  
+  if (slice.isEmptyObject()) {
+    return VPackSlice();
+  }
   // a regular document must have at least the three attributes 
   // _key, _id and _rev (in this order). _id must be the second attribute
-  TRI_ASSERT(slice.length() >= 2); 
 
   uint8_t const* p = slice.begin() + slice.findDataOffset(slice.head());
 
@@ -815,9 +831,12 @@ VPackSlice Transaction::extractFromFromDocument(VPackSlice slice) {
     slice = slice.resolveExternal();
   }
   TRI_ASSERT(slice.isObject());
+  
+  if (slice.isEmptyObject()) {
+    return VPackSlice();
+  }
   // this method must only be called on edges
   // this means we must have at least the attributes  _key, _id, _from, _to and _rev
-  TRI_ASSERT(slice.length() >= 5); 
 
   uint8_t const* p = slice.begin() + slice.findDataOffset(slice.head());
   VPackValueLength count = 0;
@@ -848,9 +867,12 @@ VPackSlice Transaction::extractToFromDocument(VPackSlice slice) {
   if (slice.isExternal()) {
     slice = slice.resolveExternal();
   }
+  
+  if (slice.isEmptyObject()) {
+    return VPackSlice();
+  }
   // this method must only be called on edges
   // this means we must have at least the attributes  _key, _id, _from, _to and _rev
-  TRI_ASSERT(slice.length() >= 5); 
 
   uint8_t const* p = slice.begin() + slice.findDataOffset(slice.head());
   VPackValueLength count = 0;
@@ -869,38 +891,6 @@ VPackSlice Transaction::extractToFromDocument(VPackSlice slice) {
   
   // fall back to the regular lookup method
   return slice.get(StaticStrings::ToString); 
-}
-
-//////////////////////////////////////////////////////////////////////////////
-/// @brief quick access to the _rev attribute in a database document
-/// the document must have at least three attributes: _key, _id, _rev 
-/// (possibly with _from and _to in between)
-//////////////////////////////////////////////////////////////////////////////
-
-VPackSlice Transaction::extractRevFromDocument(VPackSlice slice) {
-  if (slice.isExternal()) {
-    slice = slice.resolveExternal();
-  }
-  TRI_ASSERT(slice.isObject());
-  TRI_ASSERT(slice.length() >= 2); 
-
-  uint8_t const* p = slice.begin() + slice.findDataOffset(slice.head());
-  VPackValueLength count = 0;
-
-  while (*p <= basics::VelocyPackHelper::ToAttribute && ++count <= 5) {
-    if (*p == basics::VelocyPackHelper::RevAttribute) {
-      // the + 1 is required so that we can skip over the attribute name
-      // and point to the attribute value 
-      return VPackSlice(p + 1);
-    }
-    // skip over the attribute name
-    ++p;
-    // skip over the attribute value
-    p += VPackSlice(p).byteSize();
-  }
-
-  // fall back to the regular lookup method
-  return slice.get(StaticStrings::RevString); 
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -933,11 +923,8 @@ void Transaction::extractKeyAndRevFromDocument(VPackSlice slice,
     } else if (*p == basics::VelocyPackHelper::RevAttribute) {
       VPackSlice revSlice(p + 1);
       if (revSlice.isString()) {
-        // use specialized conversion method for trusted input, that also 
-        // does not create a temporary std::string
-        VPackValueLength revLength;
-        char const* rev = revSlice.getString(revLength);
-        revisionId = basics::StringUtils::uint64_trusted(rev, revLength);
+        bool isOld;
+        revisionId = TRI_StringToRid(revSlice.copyString(), isOld);
       } else if (revSlice.isNumber()) {
         revisionId = revSlice.getNumericValue<TRI_voc_rid_t>();
       }
@@ -954,7 +941,9 @@ void Transaction::extractKeyAndRevFromDocument(VPackSlice slice,
 
   // fall back to regular lookup
   keySlice = slice.get(StaticStrings::KeyString);    
-  revisionId = basics::StringUtils::uint64(slice.get(StaticStrings::RevString).copyString());
+  bool isOld;
+  revisionId = TRI_StringToRid(slice.get(StaticStrings::RevString).copyString(),
+                               isOld);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -965,18 +954,18 @@ void Transaction::extractKeyAndRevFromDocument(VPackSlice slice,
 void Transaction::buildDocumentIdentity(TRI_document_collection_t* document,
                                         VPackBuilder& builder,
                                         TRI_voc_cid_t cid,
-                                        std::string const& key,
+                                        StringRef const& key,
                                         VPackSlice const rid,
                                         VPackSlice const oldRid,
                                         TRI_doc_mptr_t const* oldMptr,
                                         TRI_doc_mptr_t const* newMptr) {
   builder.openObject();
   if (ServerState::isRunningInCluster(_serverRole)) {
-    builder.add(StaticStrings::IdString, VPackValue(resolver()->getCollectionName(cid) + "/" + key));
+    builder.add(StaticStrings::IdString, VPackValue(resolver()->getCollectionName(cid) + "/" + key.toString()));
   } else {
-    builder.add(StaticStrings::IdString, VPackValue(document->_info.name() + "/" + key));
+    builder.add(StaticStrings::IdString, VPackValue(document->_info.name() + "/" + key.toString()));
   }
-  builder.add(StaticStrings::KeyString, VPackValue(key));
+  builder.add(StaticStrings::KeyString, VPackValuePair(key.data(), key.length(), VPackValueType::String));
   TRI_ASSERT(!rid.isNone());
   builder.add(StaticStrings::RevString, rid);
   if (!oldRid.isNone()) {
@@ -1133,23 +1122,16 @@ OperationResult Transaction::anyLocal(std::string const& collectionName,
   VPackBuilder resultBuilder;
   resultBuilder.openArray();
 
-  std::shared_ptr<OperationCursor> cursor =
+  std::unique_ptr<OperationCursor> cursor =
       indexScan(collectionName, Transaction::CursorType::ANY, IndexHandle(), 
                 {}, skip, limit, 1000, false);
 
-  auto result = std::make_shared<OperationResult>(TRI_ERROR_NO_ERROR);
+  std::vector<TRI_doc_mptr_t*> result;
   while (cursor->hasMore()) {
-    cursor->getMore(result);
-
-    if (result->failed()) {
-      return OperationResult(result->code);
-    }
-  
-    VPackSlice docs = result->slice();
-    VPackArrayIterator it(docs);
-    while (it.valid()) {
-      resultBuilder.add(it.value());
-      it.next();
+    result.clear();
+    cursor->getMoreMptr(result);
+    for (auto const& mptr : result) {
+      resultBuilder.add(VPackSlice(mptr->vpack()));
     }
   }
 
@@ -1162,7 +1144,7 @@ OperationResult Transaction::anyLocal(std::string const& collectionName,
   }
 
   return OperationResult(resultBuilder.steal(),
-                         transactionContext()->orderCustomTypeHandler(), "",
+                         _transactionContextPtr->orderCustomTypeHandler(), "",
                          TRI_ERROR_NO_ERROR, false);
 }
 
@@ -1171,9 +1153,16 @@ OperationResult Transaction::anyLocal(std::string const& collectionName,
 //////////////////////////////////////////////////////////////////////////////
 
 TRI_voc_cid_t Transaction::addCollectionAtRuntime(std::string const& collectionName) {
+  if (collectionName == _collectionCache.name && !collectionName.empty()) {
+    return _collectionCache.cid;
+  }
+
   auto t = dynamic_cast<SingleCollectionTransaction*>(this);
   if (t != nullptr) {
-    return t->cid();
+    TRI_voc_cid_t cid = t->cid();
+    _collectionCache.cid = cid;
+    _collectionCache.name = collectionName;
+    return cid;
   } 
   
   auto cid = resolver()->getCollectionIdLocal(collectionName);
@@ -1182,7 +1171,10 @@ TRI_voc_cid_t Transaction::addCollectionAtRuntime(std::string const& collectionN
     THROW_ARANGO_EXCEPTION_FORMAT(TRI_ERROR_ARANGO_COLLECTION_NOT_FOUND, "'%s'",
                                   collectionName.c_str());
   }
-  return addCollectionAtRuntime(cid, collectionName);
+  addCollectionAtRuntime(cid, collectionName);
+  _collectionCache.cid = cid;
+  _collectionCache.name = collectionName;
+  return cid;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1270,7 +1262,6 @@ void Transaction::invokeOnAllElements(std::string const& collectionName,
   }
 }
 
-
 //////////////////////////////////////////////////////////////////////////////
 /// @brief return one document from a collection, fast path
 ///        If everything went well the result will contain the found document
@@ -1291,6 +1282,8 @@ int Transaction::documentFastPath(std::string const& collectionName,
 
   if (ServerState::isCoordinator(_serverRole)) {
     OperationOptions options; // use default configuration
+    options.ignoreRevs = true;
+
     OperationResult opRes = documentCoordinator(collectionName, value, options);
     if (opRes.failed()) {
       return opRes.code;
@@ -1304,7 +1297,7 @@ int Transaction::documentFastPath(std::string const& collectionName,
 
   orderDitch(cid); // will throw when it fails
 
-  std::string key(Transaction::extractKeyPart(value));
+  StringRef key(Transaction::extractKeyPart(value));
   if (key.empty()) {
     return TRI_ERROR_ARANGO_DOCUMENT_HANDLE_BAD;
   }
@@ -1319,7 +1312,40 @@ int Transaction::documentFastPath(std::string const& collectionName,
   TRI_ASSERT(hasDitch(cid));
 
   TRI_ASSERT(mptr.vpack() != nullptr);
-  result.add(VPackValue(static_cast<void const*>(mptr.vpack()), VPackValueType::External));
+  result.addExternal(mptr.vpack());
+  return TRI_ERROR_NO_ERROR;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+/// @brief return one document from a collection, fast path
+///        If everything went well the result will contain the found document
+///        (as an external on single_server) and this function will return TRI_ERROR_NO_ERROR.
+///        If there was an error the code is returned 
+///        Does not care for revision handling!
+///        Must only be called on a local server, not in cluster case!
+//////////////////////////////////////////////////////////////////////////////
+
+int Transaction::documentFastPathLocal(std::string const& collectionName,
+                                       std::string const& key,
+                                       TRI_doc_mptr_t* result) {
+  TRI_ASSERT(getStatus() == TRI_TRANSACTION_RUNNING);
+
+  TRI_voc_cid_t cid = addCollectionAtRuntime(collectionName); 
+  TRI_document_collection_t* document = documentCollection(trxCollection(cid));
+
+  orderDitch(cid); // will throw when it fails
+
+  if (key.empty()) {
+    return TRI_ERROR_ARANGO_DOCUMENT_HANDLE_BAD;
+  }
+
+  int res = document->read(this, key, result, !isLocked(document, TRI_TRANSACTION_READ));
+  
+  if (res != TRI_ERROR_NO_ERROR) {
+    return res;
+  }
+    
+  TRI_ASSERT(hasDitch(cid));
   return TRI_ERROR_NO_ERROR;
 }
 
@@ -1357,7 +1383,7 @@ OperationResult Transaction::documentCoordinator(std::string const& collectionNa
   auto resultBody = std::make_shared<VPackBuilder>();
 
   if (!value.isArray()) {
-    std::string key(Transaction::extractKeyPart(value));
+    StringRef key(Transaction::extractKeyPart(value));
     if (key.empty()) {
       return OperationResult(TRI_ERROR_ARANGO_DOCUMENT_KEY_BAD);
     }
@@ -1401,7 +1427,7 @@ OperationResult Transaction::documentLocal(std::string const& collectionName,
   auto workOnOneDocument = [&](VPackSlice const value, bool isMultiple) -> int {
     TIMER_START(TRANSACTION_DOCUMENT_EXTRACT);
 
-    std::string key(Transaction::extractKeyPart(value));
+    StringRef key(Transaction::extractKeyPart(value));
     if (key.empty()) {
       return TRI_ERROR_ARANGO_DOCUMENT_HANDLE_BAD;
     }
@@ -1438,7 +1464,7 @@ OperationResult Transaction::documentLocal(std::string const& collectionName,
     }
   
     if (!options.silent) {
-      resultBuilder.add(VPackValue(static_cast<void const*>(mptr.vpack()), VPackValueType::External));
+      resultBuilder.addExternal(mptr.vpack());
     } else if (isMultiple) {
       resultBuilder.add(VPackSlice::nullSlice());
     }
@@ -1468,7 +1494,7 @@ OperationResult Transaction::documentLocal(std::string const& collectionName,
   TIMER_STOP(TRANSACTION_DOCUMENT_LOCAL);
 
   return OperationResult(resultBuilder.steal(), 
-                         transactionContext()->orderCustomTypeHandler(), "",
+                         _transactionContextPtr->orderCustomTypeHandler(), "",
                          res, options.waitForSync, countErrorCodes); 
 }
 
@@ -1598,8 +1624,7 @@ OperationResult Transaction::insertLocal(std::string const& collectionName,
 
     TRI_ASSERT(mptr.vpack() != nullptr);
     
-    std::string keyString 
-        = VPackSlice(mptr.vpack()).get(StaticStrings::KeyString).copyString();
+    StringRef keyString(VPackSlice(mptr.vpack()).get(StaticStrings::KeyString));
 
     TIMER_START(TRANSACTION_INSERT_BUILD_DOCUMENT_IDENTITY);
 
@@ -1947,7 +1972,7 @@ OperationResult Transaction::modifyLocal(
     if (res == TRI_ERROR_ARANGO_CONFLICT) {
       // still return 
       if ((!options.silent || doingSynchronousReplication) && !isBabies) {
-        std::string key = newVal.get(StaticStrings::KeyString).copyString();
+        StringRef key(newVal.get(StaticStrings::KeyString));
         buildDocumentIdentity(document, resultBuilder, cid, key, actualRevision,
                               VPackSlice(), 
                               options.returnOld ? &previous : nullptr, nullptr);
@@ -1960,7 +1985,7 @@ OperationResult Transaction::modifyLocal(
     TRI_ASSERT(mptr.vpack() != nullptr);
 
     if (!options.silent || doingSynchronousReplication) {
-      std::string key = newVal.get(StaticStrings::KeyString).copyString();
+      StringRef key(newVal.get(StaticStrings::KeyString));
       buildDocumentIdentity(document, resultBuilder, cid, key, 
           mptr.revisionIdAsSlice(), actualRevision, 
           options.returnOld ? &previous : nullptr , 
@@ -2184,15 +2209,14 @@ OperationResult Transaction::removeLocal(std::string const& collectionName,
   auto workOnOneDocument = [&](VPackSlice value, bool isBabies) -> int {
     VPackSlice actualRevision;
     TRI_doc_mptr_t previous;
-    std::string key;
-    std::shared_ptr<VPackBuilder> builder;
+    TransactionBuilderLeaser builder(this);
+    StringRef key;
     if (value.isString()) {
-      key = value.copyString();
+      key = value;
       size_t pos = key.find('/');
       if (pos != std::string::npos) {
         key = key.substr(pos + 1);
-        builder = std::make_shared<VPackBuilder>();
-        builder->add(VPackValue(key));
+        builder->add(VPackValuePair(key.data(), key.length(), VPackValueType::String));
         value = builder->slice();
       }
     } else if (value.isObject()) {
@@ -2200,7 +2224,7 @@ OperationResult Transaction::removeLocal(std::string const& collectionName,
       if (!keySlice.isString()) {
         return TRI_ERROR_ARANGO_DOCUMENT_HANDLE_BAD;
       }
-      key = value.get(StaticStrings::KeyString).copyString();
+      key = keySlice;
     } else {
       return TRI_ERROR_ARANGO_DOCUMENT_HANDLE_BAD;
     }
@@ -2396,7 +2420,7 @@ OperationResult Transaction::allLocal(std::string const& collectionName,
   VPackBuilder resultBuilder;
   resultBuilder.openArray();
 
-  std::shared_ptr<OperationCursor> cursor =
+  std::unique_ptr<OperationCursor> cursor =
       indexScan(collectionName, Transaction::CursorType::ALL, IndexHandle(),
                 {}, skip, limit, 1000, false);
 
@@ -2407,10 +2431,9 @@ OperationResult Transaction::allLocal(std::string const& collectionName,
   std::vector<TRI_doc_mptr_t*> result;
   result.reserve(1000);
   while (cursor->hasMore()) {
-    result.clear();
     cursor->getMoreMptr(result, 1000);
     for (auto const& mptr : result) {
-      resultBuilder.add(VPackValue(mptr->vpack(), VPackValueType::External));
+      resultBuilder.addExternal(mptr->vpack());
     }
   }
 
@@ -2423,7 +2446,7 @@ OperationResult Transaction::allLocal(std::string const& collectionName,
   }
 
   return OperationResult(resultBuilder.steal(),
-                         transactionContext()->orderCustomTypeHandler(), "",
+                         _transactionContextPtr->orderCustomTypeHandler(), "",
                          TRI_ERROR_NO_ERROR, false);
 }
 
@@ -2801,8 +2824,8 @@ OperationCursor* Transaction::indexScanForCondition(
     return new OperationCursor(TRI_ERROR_NO_ERROR);
   }
 
-  // Now collect the Iterator
-  IndexIteratorContext ctxt(_vocbase, resolver());
+  // data that we pass to the iterator
+  IndexIteratorContext ctxt(_vocbase, resolver(), _serverRole);
  
   auto idx = indexId.getIndex();
   if (nullptr == idx) {
@@ -2810,6 +2833,7 @@ OperationCursor* Transaction::indexScanForCondition(
                                    "The index id cannot be empty.");
   }
 
+  // Now create the Iterator
   std::unique_ptr<IndexIterator> iterator(idx->iteratorForCondition(this, &ctxt, condition, var, reverse));
 
   if (iterator == nullptr) {
@@ -2817,9 +2841,7 @@ OperationCursor* Transaction::indexScanForCondition(
     return new OperationCursor(TRI_ERROR_OUT_OF_MEMORY);
   }
 
-  return new OperationCursor(
-      transactionContext()->orderCustomTypeHandler(), iterator.release(), limit,
-      batchSize);
+  return new OperationCursor(iterator.release(), limit, batchSize);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2828,7 +2850,7 @@ OperationCursor* Transaction::indexScanForCondition(
 /// calling this method
 //////////////////////////////////////////////////////////////////////////////
 
-std::shared_ptr<OperationCursor> Transaction::indexScan(
+std::unique_ptr<OperationCursor> Transaction::indexScan(
     std::string const& collectionName, CursorType cursorType,
     IndexHandle const& indexId, VPackSlice const search, uint64_t skip,
     uint64_t limit, uint64_t batchSize, bool reverse) {
@@ -2841,7 +2863,7 @@ std::shared_ptr<OperationCursor> Transaction::indexScan(
 
   if (limit == 0) {
     // nothing to do
-    return std::make_shared<OperationCursor>(TRI_ERROR_NO_ERROR);
+    return std::make_unique<OperationCursor>(TRI_ERROR_NO_ERROR);
   }
 
   TRI_voc_cid_t cid = addCollectionAtRuntime(collectionName); 
@@ -2897,21 +2919,19 @@ std::shared_ptr<OperationCursor> Transaction::indexScan(
       // idx->expandInSearchValues(search, expander);
 
       // Now collect the Iterator
-      IndexIteratorContext ctxt(_vocbase, resolver());
+      IndexIteratorContext ctxt(_vocbase, resolver(), _serverRole);
       iterator.reset(idx->iteratorForSlice(this, &ctxt, search, reverse));
     }
   }
   if (iterator == nullptr) {
     // We could not create an ITERATOR and it did not throw an error itself
-    return std::make_shared<OperationCursor>(TRI_ERROR_OUT_OF_MEMORY);
+    return std::make_unique<OperationCursor>(TRI_ERROR_OUT_OF_MEMORY);
   }
 
   uint64_t unused = 0;
   iterator->skip(skip, unused);
 
-  return std::make_shared<OperationCursor>(
-      transactionContext()->orderCustomTypeHandler(), iterator.release(), limit,
-      batchSize);
+  return std::make_unique<OperationCursor>(iterator.release(), limit, batchSize);
 }
   
 ////////////////////////////////////////////////////////////////////////////////
@@ -3190,6 +3210,10 @@ std::vector<std::shared_ptr<Index>> Transaction::indexesForCollectionCoordinator
         idx.reset(new arangodb::HashIndex(v));
       } else if (indexType  == arangodb::Index::TRI_IDX_TYPE_SKIPLIST_INDEX) {
         idx.reset(new arangodb::SkiplistIndex(v));
+#ifdef ARANGODB_ENABLE_ROCKSDB
+      } else if (indexType  == arangodb::Index::TRI_IDX_TYPE_ROCKSDB_INDEX) {
+        idx.reset(new arangodb::RocksDBIndex(v));
+#endif
       }
       if (idx != nullptr) {
         indexes.push_back(idx);
@@ -3268,6 +3292,9 @@ int Transaction::addCollectionEmbedded(TRI_voc_cid_t cid, TRI_transaction_type_e
                                          false, _allowImplicitCollections);
 
   if (res != TRI_ERROR_NO_ERROR) {
+    if (res == TRI_ERROR_TRANSACTION_UNREGISTERED_COLLECTION) {
+      THROW_ARANGO_EXCEPTION_MESSAGE(res, std::string(TRI_errno_string(res)) + ": " + resolver()->getCollectionNameCluster(cid));
+    }
     return registerError(res);
   }
 
@@ -3292,6 +3319,9 @@ int Transaction::addCollectionToplevel(TRI_voc_cid_t cid, TRI_transaction_type_e
   }
 
   if (res != TRI_ERROR_NO_ERROR) {
+    if (res == TRI_ERROR_TRANSACTION_UNREGISTERED_COLLECTION) {
+      THROW_ARANGO_EXCEPTION_MESSAGE(res, std::string(TRI_errno_string(res)) + ": " + resolver()->getCollectionNameCluster(cid));
+    }
     registerError(res);
   }
 
@@ -3381,7 +3411,7 @@ void Transaction::freeTransaction() {
 //////////////////////////////////////////////////////////////////////////////
 
 StringBufferLeaser::StringBufferLeaser(arangodb::Transaction* trx) 
-      : _transactionContext(trx->transactionContext().get()), 
+      : _transactionContext(trx->transactionContextPtr()),
         _stringBuffer(_transactionContext->leaseStringBuffer(32)) {
 }
 
@@ -3407,8 +3437,9 @@ StringBufferLeaser::~StringBufferLeaser() {
 //////////////////////////////////////////////////////////////////////////////
 
 TransactionBuilderLeaser::TransactionBuilderLeaser(arangodb::Transaction* trx) 
-      : _transactionContext(trx->transactionContext().get()), 
+      : _transactionContext(trx->transactionContextPtr()), 
         _builder(_transactionContext->leaseBuilder()) {
+  TRI_ASSERT(_builder != nullptr);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3418,6 +3449,7 @@ TransactionBuilderLeaser::TransactionBuilderLeaser(arangodb::Transaction* trx)
 TransactionBuilderLeaser::TransactionBuilderLeaser(arangodb::TransactionContext* transactionContext) 
       : _transactionContext(transactionContext), 
         _builder(_transactionContext->leaseBuilder()) {
+  TRI_ASSERT(_builder != nullptr);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3425,6 +3457,8 @@ TransactionBuilderLeaser::TransactionBuilderLeaser(arangodb::TransactionContext*
 //////////////////////////////////////////////////////////////////////////////
 
 TransactionBuilderLeaser::~TransactionBuilderLeaser() { 
-  _transactionContext->returnBuilder(_builder); 
+  if (_builder != nullptr) {
+    _transactionContext->returnBuilder(_builder); 
+  }
 }
 

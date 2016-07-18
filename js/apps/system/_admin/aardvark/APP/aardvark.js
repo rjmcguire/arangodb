@@ -1,36 +1,37 @@
+/* global AQL_EXECUTE */
+
 'use strict';
 
-////////////////////////////////////////////////////////////////////////////////
-/// DISCLAIMER
-///
-/// Copyright 2010-2013 triAGENS GmbH, Cologne, Germany
-/// Copyright 2016 ArangoDB GmbH, Cologne, Germany
-///
-/// Licensed under the Apache License, Version 2.0 (the "License");
-/// you may not use this file except in compliance with the License.
-/// You may obtain a copy of the License at
-///
-///     http://www.apache.org/licenses/LICENSE-2.0
-///
-/// Unless required by applicable law or agreed to in writing, software
-/// distributed under the License is distributed on an "AS IS" BASIS,
-/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-/// See the License for the specific language governing permissions and
-/// limitations under the License.
-///
-/// Copyright holder is ArangoDB GmbH, Cologne, Germany
-///
-/// @author Michael Hackstein
-/// @author Alan Plum
-////////////////////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////////////////
+// DISCLAIMER
+//
+// Copyright 2010-2013 triAGENS GmbH, Cologne, Germany
+// Copyright 2016 ArangoDB GmbH, Cologne, Germany
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Copyright holder is ArangoDB GmbH, Cologne, Germany
+//
+// @author Michael Hackstein
+// @author Heiko Kernbach
+// @author Alan Plum
+// //////////////////////////////////////////////////////////////////////////////
 
 const joi = require('joi');
-const Netmask = require('netmask').Netmask;
 const dd = require('dedent');
 const internal = require('internal');
 const db = require('@arangodb').db;
 const errors = require('@arangodb').errors;
-const joinPath = require('path').posix.join;
 const notifications = require('@arangodb/configuration').notifications;
 const examples = require('@arangodb/graph-examples/example-graph');
 const createRouter = require('@arangodb/foxx/router');
@@ -44,50 +45,22 @@ API_DOCS.basePath = `/_db/${encodeURIComponent(db._name())}`;
 const router = createRouter();
 module.exports = router;
 
-let trustedProxies = TRUSTED_PROXIES();
+router.get('/config.js', function (req, res) {
+  const scriptName = req.get('x-script-name');
+  const basePath = req.trustProxy && scriptName || '';
+  res.send(
+    `var frontendConfig = ${JSON.stringify({
+      basePath: basePath,
+      db: req.database,
+      authenticationEnabled: internal.authenticationEnabled(),
+      isCluster: cluster.isCluster()
+    })}`
+  );
+})
+.response(['text/javascript']);
 
-let trustedProxyBlocks;
-if (Array.isArray(trustedProxies)) {
-  trustedProxyBlocks = [];
-  trustedProxies.forEach(trustedProxy => {
-    try {
-      trustedProxyBlocks.push(new Netmask(trustedProxy));
-    } catch (e) {
-      console.warn("Error parsing trusted proxy " + trustedProxy, e);
-    }
-  });
-} else {
-  trustedProxyBlocks = null;
-}
-
-let isTrustedProxy = function(proxyAddress) {
-  if (trustedProxies === null) {
-    return true;
-  }
-
-  return trustedProxyBlocks.some(block => {
-    return block.contains(proxyAddress);
-  });
-}
-
-router.get('/config.js', function(req, res) {
-  let basePath = '';
-  if (req.headers.hasOwnProperty('x-forwarded-for')
-      && req.headers.hasOwnProperty('x-script-name')
-      && isTrustedProxy(req.remoteAddress)) {
-    basePath = req.headers['x-script-name'];
-  }
-  res.set('content-type', 'text/javascript');
-  res.send("var frontendConfig = " + JSON.stringify({
-    "basePath": basePath, 
-    "db": req.database, 
-    "authenticationEnabled": global.AUTHENTICATION_ENABLED(),
-    "isCluster": cluster.isCluster()
-  }));
-});
-
-router.get('/whoAmI', function(req, res) {
-  res.json({user: req.user || null});
+router.get('/whoAmI', function (req, res) {
+  res.json({user: req.arangoUser || null});
 })
 .summary('Return the current user')
 .description(dd`
@@ -95,22 +68,20 @@ router.get('/whoAmI', function(req, res) {
   Returns "false" if authentication is disabled.
 `);
 
-
 const authRouter = createRouter();
 router.use(authRouter);
 
 authRouter.use((req, res, next) => {
-  if (global.AUTHENTICATION_ENABLED()) {
-    if (!req.user) {
+  if (internal.authenticationEnabled()) {
+    if (!req.arangoUser) {
       res.throw('unauthorized');
     }
   }
   next();
 });
 
-
 router.get('/api/*', module.context.apiDocumentation({
-  swaggerJson(req, res) {
+  swaggerJson (req, res) {
     res.json(API_DOCS);
   }
 }))
@@ -119,8 +90,7 @@ router.get('/api/*', module.context.apiDocumentation({
   Mounts the system API documentation.
 `);
 
-
-authRouter.get('shouldCheckVersion', function(req, res) {
+authRouter.get('shouldCheckVersion', function (req, res) {
   const versions = notifications.versions();
   res.json(Boolean(versions && versions.enableVersionNotification));
 })
@@ -129,8 +99,7 @@ authRouter.get('shouldCheckVersion', function(req, res) {
   Check if version check is allowed.
 `);
 
-
-authRouter.post('disableVersionCheck', function(req, res) {
+authRouter.post('disableVersionCheck', function (req, res) {
   notifications.setVersions({enableVersionNotification: false});
   res.json('ok');
 })
@@ -139,8 +108,7 @@ authRouter.post('disableVersionCheck', function(req, res) {
   Disable the version check in web interface
 `);
 
-
-authRouter.post('/query/explain', function(req, res) {
+authRouter.post('/query/explain', function (req, res) {
   const bindVars = req.body.bindVars;
   const query = req.body.query;
   const id = req.body.id;
@@ -175,8 +143,7 @@ authRouter.post('/query/explain', function(req, res) {
   Explains a query in a more user-friendly way than the query_api/explain
 `);
 
-
-authRouter.post('/query/upload/:user', function(req, res) {
+authRouter.post('/query/upload/:user', function (req, res) {
   let user = req.pathParams.user;
 
   try {
@@ -217,8 +184,7 @@ authRouter.post('/query/upload/:user', function(req, res) {
   This function uploads all given user queries.
 `);
 
-
-authRouter.get('/query/download/:user', function(req, res) {
+authRouter.get('/query/download/:user', function (req, res) {
   let user = req.pathParams.user;
 
   try {
@@ -240,14 +206,12 @@ authRouter.get('/query/download/:user', function(req, res) {
   Download and export all queries from the given username.
 `);
 
-
-authRouter.get('/query/result/download/:query', function(req, res) {
+authRouter.get('/query/result/download/:query', function (req, res) {
   let query;
   try {
     query = internal.base64Decode(req.pathParams.query);
     query = JSON.parse(query);
-  }
-  catch (e) {
+  } catch (e) {
     res.throw('bad request', e.message, {cause: e});
   }
 
@@ -262,8 +226,7 @@ authRouter.get('/query/result/download/:query', function(req, res) {
   This function downloads the result of a user query.
 `);
 
-
-authRouter.post('/graph-examples/create/:name', function(req, res) {
+authRouter.post('/graph-examples/create/:name', function (req, res) {
   const name = req.pathParams.name;
 
   if (['knows_graph', 'social', 'routeplanner'].indexOf(name) === -1) {
@@ -279,8 +242,7 @@ authRouter.post('/graph-examples/create/:name', function(req, res) {
   Create one of the given example graphs.
 `);
 
-
-authRouter.post('/job', function(req, res) {
+authRouter.post('/job', function (req, res) {
   db._frontend.save(Object.assign(req.body, {model: 'job'}));
   res.json(true);
 })
@@ -295,8 +257,7 @@ authRouter.post('/job', function(req, res) {
   Create a new job id entry in a specific system database with a given id.
 `);
 
-
-authRouter.delete('/job', function(req, res) {
+authRouter.delete('/job', function (req, res) {
   db._frontend.removeByExample({model: 'job'}, false);
   res.json(true);
 })
@@ -305,8 +266,7 @@ authRouter.delete('/job', function(req, res) {
   Delete all jobs in a specific system database with a given id.
 `);
 
-
-authRouter.delete('/job/:id', function(req, res) {
+authRouter.delete('/job/:id', function (req, res) {
   db._frontend.removeByExample({id: req.pathParams.id}, false);
   res.json(true);
 })
@@ -315,8 +275,7 @@ authRouter.delete('/job/:id', function(req, res) {
   Delete an existing job id entry in a specific system database with a given id.
 `);
 
-
-authRouter.get('/job', function(req, res) {
+authRouter.get('/job', function (req, res) {
   const result = db._frontend.all().toArray();
   res.json(result);
 })
@@ -324,3 +283,133 @@ authRouter.get('/job', function(req, res) {
 .description(dd`
   This function returns the job ids of all currently running jobs.
 `);
+
+authRouter.get('/graph/:name', function (req, res) {
+  var _ = require('lodash');
+  var name = req.pathParams.name;
+  var gm = require('@arangodb/general-graph');
+  // var traversal = require("@arangodb/graph/traversal");
+
+  var graph = gm._graph(name);
+
+  var vertices = graph._vertexCollections();
+  var vertexName = vertices[Math.floor(Math.random() * vertices.length)].name();
+
+  var vertexCollections = [];
+  _.each(graph._vertexCollections(), function (vertex) {
+    vertexCollections.push({
+      name: vertex.name(),
+      id: vertex._id
+    });
+  });
+
+  var startVertex;
+  var config;
+
+  try {
+    config = req.queryParams;
+  } catch (e) {
+    res.throw('bad request', e.message, {cause: e});
+  }
+
+  if (config.nodeStart) {
+    try {
+      startVertex = db._document(config.nodeStart);
+    } catch (e) {
+      res.throw('bad request', e.message, {cause: e});
+    }
+
+    if (!startVertex) {
+      startVertex = db[vertexName].any();
+    }
+  } else {
+    startVertex = db[vertexName].any();
+  }
+
+  var aqlQuery =
+   'FOR v, e, p IN 1..' + (config.depth || '2') + ' ANY "' + startVertex._id + '" GRAPH "' + name + '"' +
+   'RETURN p'
+  ;
+
+  var cursor = AQL_EXECUTE(aqlQuery);
+
+  var nodesObj = {};
+  var nodesArr = [];
+  var edgesObj = {};
+  var edgesArr = [];
+
+  _.each(cursor.json, function (obj) {
+    var edgeLabel;
+
+    _.each(obj.edges, function (edge) {
+      if (edge._to && edge._from) {
+        if (config.edgeLabel) {
+          // configure edge labels
+          edgeLabel = edge[config.edgeLabel];
+
+          if (edgeLabel) {
+            edgeLabel = edgeLabel.toString();
+          }
+
+          if (!edgeLabel) {
+            edgeLabel = 'attribute ' + config.edgeLabel + ' not found';
+          }
+        }
+
+        edgesObj[edge._from + edge._to] = {
+          id: edge._id,
+          source: edge._from,
+          label: edgeLabel,
+          color: config.edgeColor || '#cccccc',
+          target: edge._to
+        };
+      }
+    });
+
+    var nodeLabel;
+    var nodeSize;
+
+    _.each(obj.vertices, function (node) {
+      if (config.nodeLabel) {
+        nodeLabel = node[config.nodeLabel];
+      } else {
+        nodeLabel = node._id;
+      }
+
+      if (config.nodeSize) {
+        nodeSize = node[config.nodeSize];
+      }
+
+      nodesObj[node._id] = {
+        id: node._id,
+        label: nodeLabel,
+        size: nodeSize || Math.random(),
+        color: config.nodeColor || '#2ecc71',
+        x: Math.random(),
+        y: Math.random()
+      };
+    });
+  });
+
+  // array format for sigma.js
+  _.each(edgesObj, function (node) {
+    edgesArr.push(node);
+  });
+  _.each(nodesObj, function (node) {
+    nodesArr.push(node);
+  });
+
+  res.json({
+    nodes: nodesArr,
+    edges: edgesArr,
+    settings: {
+      vertexCollections: vertexCollections,
+      startVertex: startVertex
+    }
+  });
+})
+.summary('Return vertices and edges of a graph.')
+.description(dd`
+  This function returns vertices and edges for a specific graph.
+`);
+

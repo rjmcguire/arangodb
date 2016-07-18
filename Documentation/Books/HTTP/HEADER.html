@@ -1,16 +1,17 @@
-<div id="header">
-  <div id="logo">
+<div class="arangodb-header">
+  <div class="arangodb-logo">
     <a href="https://arangodb.com/">
       <img src="https://docs.arangodb.com/assets/arangodb_logo_2016.png">
     </a>
   </div>
-  <div id="logo-small">
+  <div class="arangodb-logo-small">
     <a href="https://arangodb.com/">
       <img src="https://docs.arangodb.com/assets/arangodb_logo_small_2016.png">
     </a>
   </div>
-  <select id="version-switcher">
-    <option value="devel">VERSION_NUMBER</option>
+  <select class="arangodb-version-switcher">
+    <option value="devel">devel</option>
+    <option value="3.0">v3.0</option>
     <option value="2.8">v2.8</option>
     <option value="2.7">v2.7</option>
     <option value="2.6">v2.6</option>
@@ -23,18 +24,18 @@
   <div class="google-search">
     <gcse:searchbox-only></gcse:searchbox-only>
   </div>
-  <ul id="navmenu">
+  <ul class="arangodb-navmenu">
     <li>
-      <a href="BASE_PATH/Manual/index.html">Manual</a>
+      <a href="#" data-book="Manual">Manual</a>
     </li>
     <li>
-      <a href="BASE_PATH/AQL/index.html">AQL</a>
+      <a href="#" data-book="AQL">AQL</a>
     </li>
     <li class="active-tab">
-      <a href="BASE_PATH/HTTP/index.html">HTTP</a>
+      <a href="#" data-book="HTTP">HTTP</a>
     </li>
     <li>
-      <a href="https://docs.arangodb.com/cookbook">Cookbook</a>
+      <a href="#" data-book="cookbook">Cookbook</a>
     </li>
     <li class="socialIcons">
       <a href="https://github.com/ArangoDB/ArangoDB/issues" target="blank" name="github">

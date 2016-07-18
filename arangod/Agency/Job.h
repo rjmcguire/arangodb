@@ -64,12 +64,12 @@ inline arangodb::consensus::write_ret_t transact (
     envelope->close();
   } catch (std::exception const& e) {
     LOG_TOPIC(ERR, Logger::AGENCY) << "Supervision failed to build transaction.";
-    LOG_TOPIC(ERR, Logger::AGENCY) << e.what();
+    LOG_TOPIC(ERR, Logger::AGENCY) << e.what() << " " << __FILE__ << __LINE__;
   }
   
   LOG_TOPIC(DEBUG, Logger::AGENCY) << envelope->toJson();
   auto ret = _agent->write(envelope);
-  if (waitForCommit) {
+  if (waitForCommit && !ret.indices.empty()) {
     auto maximum = *std::max_element(ret.indices.begin(), ret.indices.end());
     if (maximum > 0) {  // some baby has worked
       _agent->waitFor(maximum);
@@ -154,6 +154,12 @@ struct Job {
   
     // --- Delete pending
     finished.add(_agencyPrefix + pendingPrefix + _jobId,
+                 VPackValue(VPackValueType::Object));
+    finished.add("op", VPackValue("delete"));
+    finished.close();
+
+    // --- Delete todo
+    finished.add(_agencyPrefix + toDoPrefix + _jobId,
                  VPackValue(VPackValueType::Object));
     finished.add("op", VPackValue("delete"));
     finished.close();

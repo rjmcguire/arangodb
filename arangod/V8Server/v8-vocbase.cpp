@@ -1043,7 +1043,7 @@ static void JS_WarningAql(v8::FunctionCallbackInfo<v8::Value> const& args) {
     // note: we may not have a query if the AQL functions are called without
     // a query, e.g. during tests
     int code = static_cast<int>(TRI_ObjectToInt64(args[0]));
-    std::string const&& message = TRI_ObjectToString(args[1]);
+    std::string const message = TRI_ObjectToString(args[1]);
 
     auto query = static_cast<arangodb::aql::Query*>(v8g->_query);
     query->registerWarning(code, message.c_str());
@@ -1196,7 +1196,7 @@ static void JS_ExecuteAqlJson(v8::FunctionCallbackInfo<v8::Value> const& args) {
       TRI_V8_THROW_EXCEPTION(res);
     }
   }
-
+  
   TRI_GET_GLOBALS();
   arangodb::aql::Query query(true, vocbase, queryBuilder, options,
                              arangodb::aql::PART_MAIN);
@@ -1208,14 +1208,12 @@ static void JS_ExecuteAqlJson(v8::FunctionCallbackInfo<v8::Value> const& args) {
     TRI_V8_THROW_EXCEPTION_FULL(queryResult.code, queryResult.details);
   }
 
-  auto transactionContext =
-      std::make_shared<StandaloneTransactionContext>(vocbase);
   // return the array value as it is. this is a performance optimization
   v8::Handle<v8::Object> result = v8::Object::New(isolate);
   if (queryResult.result != nullptr) {
     result->ForceSet(TRI_V8_ASCII_STRING("json"),
                      TRI_VPackToV8(isolate, queryResult.result->slice(),
-                                   transactionContext->getVPackOptions()));
+                                   queryResult.context->getVPackOptions()));
   }
   if (queryResult.stats != nullptr) {
     VPackSlice stats = queryResult.stats->slice();
@@ -2030,7 +2028,7 @@ static void JS_UseDatabase(v8::FunctionCallbackInfo<v8::Value> const& args) {
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_FORBIDDEN);
   }
 
-  std::string&& name = TRI_ObjectToString(args[0]);
+  std::string name = TRI_ObjectToString(args[0]);
 
   TRI_vocbase_t* vocbase = GetContextVocBase(isolate);
 

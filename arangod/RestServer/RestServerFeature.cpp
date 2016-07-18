@@ -33,9 +33,9 @@
 #include "Cluster/RestAgencyCallbacksHandler.h"
 #include "Cluster/RestShardHandler.h"
 #include "Dispatcher/DispatcherFeature.h"
-#include "HttpServer/HttpHandlerFactory.h"
 #include "HttpServer/HttpServer.h"
 #include "HttpServer/HttpsServer.h"
+#include "HttpServer/RestHandlerFactory.h"
 #include "ProgramOptions/Parameters.h"
 #include "ProgramOptions/ProgramOptions.h"
 #include "ProgramOptions/Section.h"
@@ -78,8 +78,10 @@ using namespace arangodb;
 using namespace arangodb::rest;
 using namespace arangodb::options;
 
+rest::RestHandlerFactory* RestServerFeature::HANDLER_FACTORY = nullptr;
+rest::AsyncJobManager* RestServerFeature::JOB_MANAGER = nullptr;
+RestServerFeature* RestServerFeature::REST_SERVER = nullptr;
 AuthInfo RestServerFeature::AUTH_INFO;
-RestServerFeature* RestServerFeature::RESTSERVER = nullptr;
 
 RestServerFeature::RestServerFeature(
     application_features::ApplicationServer* server)
@@ -95,16 +97,17 @@ RestServerFeature::RestServerFeature(
       _jobManager(nullptr) {
   setOptional(true);
   requiresElevatedPrivileges(false);
+  startsAfter("Agency");
+  startsAfter("CheckVersion");
+  startsAfter("Database");
   startsAfter("Dispatcher");
   startsAfter("Endpoint");
+  startsAfter("FoxxQueues");
+  startsAfter("LogfileManager");
+  startsAfter("Random");
   startsAfter("Scheduler");
   startsAfter("Server");
-  startsAfter("Agency");
-  startsAfter("LogfileManager");
-  startsAfter("Database");
   startsAfter("Upgrade");
-  startsAfter("CheckVersion");
-  startsAfter("FoxxQueues");
 }
 
 void RestServerFeature::collectOptions(
@@ -211,12 +214,10 @@ void RestServerFeature::validateOptions(std::shared_ptr<ProgramOptions>) {
                << RestServerFeature::_maxSecretLength;
       FATAL_ERROR_EXIT();
     }
-  } else {
-    generateNewJwtSecret();
   }
 }
 
-static TRI_vocbase_t* LookupDatabaseFromRequest(HttpRequest* request,
+static TRI_vocbase_t* LookupDatabaseFromRequest(GeneralRequest* request,
                                                 TRI_server_t* server) {
   // get database name from request
   std::string const& dbName = request->databaseName();
@@ -238,7 +239,7 @@ static TRI_vocbase_t* LookupDatabaseFromRequest(HttpRequest* request,
   return TRI_UseDatabaseServer(server, p);
 }
 
-static bool SetRequestContext(HttpRequest* request, void* data) {
+static bool SetRequestContext(GeneralRequest* request, void* data) {
   TRI_server_t* server = static_cast<TRI_server_t*>(data);
   TRI_vocbase_t* vocbase = LookupDatabaseFromRequest(request, server);
 
@@ -270,17 +271,24 @@ void RestServerFeature::generateNewJwtSecret() {
   }
 }
 
-void RestServerFeature::prepare() { HttpHandlerFactory::setMaintenance(true); }
+void RestServerFeature::prepare() {
+  if (_jwtSecret.empty()) {
+    generateNewJwtSecret();
+  }
+
+  RestHandlerFactory::setMaintenance(true);
+  REST_SERVER = this;
+}
 
 void RestServerFeature::start() {
-  RESTSERVER = this;
-
   _jobManager.reset(new AsyncJobManager(ClusterCommRestCallback));
 
-  _httpOptions._vocbase = DatabaseFeature::DATABASE->vocbase();
+  JOB_MANAGER = _jobManager.get();
 
-  _handlerFactory.reset(new HttpHandlerFactory(
-      _allowMethodOverride, &SetRequestContext, DatabaseServerFeature::SERVER));
+  _handlerFactory.reset(new RestHandlerFactory(&SetRequestContext,
+                                               DatabaseServerFeature::SERVER));
+
+  HANDLER_FACTORY = _handlerFactory.get();
 
   defineHandlers();
   buildServers();
@@ -322,8 +330,9 @@ void RestServerFeature::unprepare() {
     delete server;
   }
 
-  _httpOptions._vocbase = nullptr;
-  RESTSERVER = nullptr;
+  REST_SERVER = nullptr;
+  JOB_MANAGER = nullptr;
+  HANDLER_FACTORY = nullptr;
 }
 
 void RestServerFeature::buildServers() {
@@ -335,9 +344,8 @@ void RestServerFeature::buildServers() {
 
   // unencrypted HTTP endpoints
   HttpServer* httpServer =
-      new HttpServer(SchedulerFeature::SCHEDULER, DispatcherFeature::DISPATCHER,
-                     _handlerFactory.get(), _jobManager.get(),
-                     _keepAliveTimeout, _accessControlAllowOrigins);
+      new HttpServer(_keepAliveTimeout,
+                     _allowMethodOverride, _accessControlAllowOrigins);
 
   // YYY #warning FRANK filter list
   auto const& endpointList = endpoint->endpointList();
@@ -360,10 +368,9 @@ void RestServerFeature::buildServers() {
     SSL_CTX* sslContext = ssl->sslContext();
 
     // https
-    httpServer = new HttpsServer(
-        SchedulerFeature::SCHEDULER, DispatcherFeature::DISPATCHER,
-        _handlerFactory.get(), _jobManager.get(), _keepAliveTimeout,
-        _accessControlAllowOrigins, sslContext);
+    httpServer = new HttpsServer(_keepAliveTimeout,
+                                 _allowMethodOverride,
+                                 _accessControlAllowOrigins, sslContext);
 
     httpServer->setEndpointList(&endpointList);
     _servers.push_back(httpServer);
@@ -459,7 +466,7 @@ void RestServerFeature::defineHandlers() {
       "/_api/aql",
       RestHandlerCreator<aql::RestAqlHandler>::createData<aql::QueryRegistry*>,
       queryRegistry);
-  
+
   _handlerFactory->addPrefixHandler(
       "/_api/aql-builtin",
       RestHandlerCreator<RestAqlFunctionsHandler>::createNoData);
@@ -546,7 +553,5 @@ void RestServerFeature::defineHandlers() {
   // ...........................................................................
 
   _handlerFactory->addPrefixHandler(
-      "/", RestHandlerCreator<RestActionHandler>::createData<
-               RestActionHandler::action_options_t*>,
-      (void*)&_httpOptions);
+      "/", RestHandlerCreator<RestActionHandler>::createNoData);
 }

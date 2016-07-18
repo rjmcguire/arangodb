@@ -39,7 +39,7 @@
 #include "Dispatcher/Dispatcher.h"
 #include "Dispatcher/DispatcherFeature.h"
 #include "Dispatcher/Job.h"
-#include "HttpServer/HttpHandlerFactory.h"
+#include "HttpServer/RestHandlerFactory.h"
 #include "Logger/Logger.h"
 #include "RestServer/RestServerFeature.h"
 #include "V8/v8-globals.h"
@@ -119,7 +119,7 @@ void HeartbeatThread::runDBServer() {
   // think
   // ohhh the dbserver is online...pump some documents into it
   // which fails when it is still in maintenance mode
-  while (arangodb::rest::HttpHandlerFactory::isMaintenance()) {
+  while (arangodb::rest::RestHandlerFactory::isMaintenance()) {
     usleep(100000);
   }
 
@@ -470,14 +470,7 @@ void HeartbeatThread::removeDispatchedJob(DBServerAgencySyncResult result) {
 static std::string const prefixPlanChangeCoordinator = "Plan/Databases";
 bool HeartbeatThread::handlePlanChangeCoordinator(uint64_t currentPlanVersion) {
   LOG_TOPIC(TRACE, Logger::HEARTBEAT) << "found a plan update";
-  AgencyCommResult result;
-
-  {
-    AgencyCommLocker locker("Plan", "READ");
-    if (locker.successful()) {
-      result = _agency.getValues(prefixPlanChangeCoordinator);
-    }
-  }
+  AgencyCommResult result = _agency.getValues(prefixPlanChangeCoordinator);
 
   if (result.successful()) {
     std::vector<TRI_voc_tick_t> ids;

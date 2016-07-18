@@ -1,43 +1,21 @@
+if(NOT DEFINED CMAKE_INSTALL_SYSCONFDIR)
+  set(CMAKE_INSTALL_SYSCONFDIR "etc/arangodb3" CACHE PATH "read-only single-machine data (etc)")
+endif()
+
 include(GNUInstallDirs)
 
-# etc -------------------------------
-set(ETCDIR "" CACHE path "System configuration directory (defaults to prefix/etc)")
-
-# /etc -------------------------------
-if (ETCDIR STREQUAL "")
-  set(ETCDIR_NATIVE "${CMAKE_INSTALL_PREFIX}/etc/arangodb3")
-  set(ETCDIR_INSTALL "etc/arangodb3")
-else ()
-  set(ETCDIR_NATIVE "${ETCDIR}/arangodb3")
-  set(ETCDIR_INSTALL "${ETCDIR}/arangodb3")
-endif ()
-
-# MS stuff ---------------------------
+# install the visual studio runtime:
 if (MSVC)
-  file(TO_NATIVE_PATH "${ETCDIR_INSTALL}" ETCDIR_INSTALL)
-  STRING(REGEX REPLACE "\\\\" "\\\\\\\\" ETCDIR_ESCAPED "${ETCDIR_INSTALL}")
-else ()
-  file(TO_NATIVE_PATH "${ETCDIR_NATIVE}" ETCDIR_NATIVE)
-  STRING(REGEX REPLACE "\\\\" "\\\\\\\\" ETCDIR_ESCAPED "${ETCDIR_NATIVE}")
-endif ()
+  set(CMAKE_INSTALL_UCRT_LIBRARIES 1)
+  include(InstallRequiredSystemLibraries)
+  INSTALL(FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} DESTINATION bin COMPONENT Libraries)
+  INSTALL(FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT} DESTINATION bin COMPONENT Libraries)
+endif()
+
+file(TO_NATIVE_PATH "${CMAKE_INSTALL_FULL_SYSCONFDIR}" ETCDIR_NATIVE)
+STRING(REGEX REPLACE "\\\\" "\\\\\\\\" ETCDIR_ESCAPED "${ETCDIR_NATIVE}")
 
 add_definitions("-D_SYSCONFDIR_=\"${ETCDIR_ESCAPED}\"")
-
-# /var
-set(VARDIR ""
-  CACHE path
-  "System configuration directory (defaults to prefix/var/arangodb3)"
-)
-
-if (VARDIR STREQUAL "")
-  set(VARDIR_NATIVE "${CMAKE_INSTALL_PREFIX}/var")
-  set(VARDIR_INSTALL "var")
-else ()
-  set(VARDIR_NATIVE "${VARDIR}")
-  set(VARDIR_INSTALL "${VARDIR}")
-endif ()
-
-file(TO_NATIVE_PATH "${VARDIR_NATIVE}" VARDIR_NATIVE)
 
 # database directory 
 FILE(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/var/lib/arangodb3")
@@ -46,10 +24,10 @@ FILE(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/var/lib/arangodb3")
 FILE(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/var/lib/arangodb3-apps")
 
 # logs
-FILE(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/var/log/arangodb")
+FILE(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/var/log/arangodb3")
 
 # package
-set(TRI_PKGDATADIR "${CMAKE_INSTALL_PREFIX}/share/arangodb3")
+set(TRI_PKGDATADIR "${CMAKE_INSTALL_FULL_DATAROOTDIR}/arangodb3")
 
 # resources
 set(TRI_RESOURCEDIR "resources")
@@ -125,21 +103,21 @@ macro (generate_path_config name)
   FILE(READ ${PROJECT_SOURCE_DIR}/etc/arangodb3/${name}.conf.in FileContent)
   STRING(REPLACE "@PKGDATADIR@" "${TRI_PKGDATADIR}" 
     FileContent "${FileContent}")
-  STRING(REPLACE "@LOCALSTATEDIR@" "${VARDIR_NATIVE}" 
+  STRING(REPLACE "@LOCALSTATEDIR@" "${CMAKE_INSTALL_FULL_LOCALSTATEDIR}" 
     FileContent "${FileContent}")
   FILE(WRITE ${PROJECT_BINARY_DIR}/etc/arangodb3/${name}.conf "${FileContent}")
 endmacro ()
 
 # installs a config file -------------------------------------------------------
 macro (install_config name)
-  if (MSVC OR DARWIN)
+  if (MSVC OR (DARWIN AND NOT HOMEBREW))
     generate_root_config(${name})
   else ()
     generate_path_config(${name})
   endif ()
   install(
     FILES ${PROJECT_BINARY_DIR}/etc/arangodb3/${name}.conf
-    DESTINATION ${ETCDIR_INSTALL})
+    DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR})
 endmacro ()
 
 # installs a readme file converting EOL ----------------------------------------
@@ -162,9 +140,9 @@ macro (install_command_alias name where alias)
       TARGET ${name}
       POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${name}>
-	      ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$(Configuration)/${alias}.exe)
+	      ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIGURATION>/${alias}.exe)
     install(
-      PROGRAMS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$(Configuration)/${alias}.exe
+      PROGRAMS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIGURATION>/${alias}.exe
       DESTINATION ${where})
   else ()
     add_custom_command(
@@ -278,7 +256,12 @@ if (DH_INSTALLINIT AND FAKEROOT)
 endif()
 
 # General
-set(CPACK_PACKAGE_NAME "arangodb3")
+if (DARWIN)
+  set(CPACK_PACKAGE_NAME "ArangoDB-CLI")
+else ()
+  set(CPACK_PACKAGE_NAME "arangodb3")
+endif ()
+
 set(CPACK_PACKAGE_VENDOR  "ArangoDB GmbH")
 set(CPACK_PACKAGE_CONTACT "info@arangodb.com")
 set(CPACK_PACKAGE_VERSION "${ARANGODB_VERSION}")
@@ -303,6 +286,7 @@ set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_COMPRESSION_TYPE "xz")
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://www.arangodb.com/")
 set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${PROJECT_BINARY_DIR}/debian-work/debian/${CPACK_PACKAGE_NAME}/DEBIAN/postinst;${PROJECT_BINARY_DIR}/debian-work/debian/${CPACK_PACKAGE_NAME}/DEBIAN/preinst;${PROJECT_BINARY_DIR}/debian-work/debian/${CPACK_PACKAGE_NAME}/DEBIAN/postrm;${PROJECT_BINARY_DIR}/debian-work/debian/${CPACK_PACKAGE_NAME}/DEBIAN/prerm;")
+
 set(CPACK_BUNDLE_NAME            "${CPACK_PACKAGE_NAME}")
 configure_file("${PROJECT_SOURCE_DIR}/Installation/MacOSX/Bundle/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 set(CPACK_BUNDLE_PLIST           "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
@@ -333,7 +317,7 @@ if (MSVC)
     DIRECTORY "${PROJECT_SOURCE_DIR}/Installation/Windows/Icons"
     DESTINATION ${TRI_RESOURCEDIR})
 
-  set(CPACK_NSIS_DEFINES "
+  set(CPACK_ARANGODB_NSIS_DEFINES "
     !define BITS ${BITS}
     !define TRI_FRIENDLY_SVC_NAME '${ARANGODB_FRIENDLY_STRING}'
     !define TRI_AARDVARK_URL 'http://127.0.0.1:8529'
@@ -355,12 +339,12 @@ configure_file("${CMAKE_SOURCE_DIR}/Installation/cmake/CMakeCPackOptions.cmake.i
     "${CMAKE_BINARY_DIR}/CMakeCPackOptions.cmake" @ONLY)
 set(CPACK_PROJECT_CONFIG_FILE "${CMAKE_BINARY_DIR}/CMakeCPackOptions.cmake")
 
-if (NOT(MSVC))
+if (NOT(MSVC OR DARWIN))
   # components
   install(
     FILES ${PROJECT_SOURCE_DIR}/Installation/debian/arangodb.init
     PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
-    DESTINATION ${ETCDIR}/init.d
+    DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/init.d
     RENAME arangodb3
     COMPONENT debian-extras
   )
@@ -406,8 +390,8 @@ install(
 ################################################################################
 
 install(
-  DIRECTORY ${PROJECT_BINARY_DIR}/var/log/arangodb
-  DESTINATION ${VARDIR_INSTALL}/log)
+  DIRECTORY ${PROJECT_BINARY_DIR}/var/log/arangodb3
+  DESTINATION ${CMAKE_INSTALL_FULL_LOCALSTATEDIR}/log)
 
 ################################################################################
 ### @brief install database directory
@@ -415,7 +399,7 @@ install(
 
 install(
   DIRECTORY ${PROJECT_BINARY_DIR}/var/lib/arangodb3
-  DESTINATION ${VARDIR_INSTALL}/lib)
+  DESTINATION ${CMAKE_INSTALL_FULL_LOCALSTATEDIR}/lib)
 
 ################################################################################
 ### @brief install apps directory
@@ -423,4 +407,16 @@ install(
 
 install(
   DIRECTORY ${PROJECT_BINARY_DIR}/var/lib/arangodb3-apps
-  DESTINATION ${VARDIR_INSTALL}/lib)
+  DESTINATION ${CMAKE_INSTALL_FULL_LOCALSTATEDIR}/lib)
+
+if (BUNDLE_OPENSSL)
+  if (NOT LIB_EAY_RELEASE_DLL OR NOT SSL_EAY_RELEASE_DLL)
+    message(FATAL_ERROR, "BUNDLE_OPENSSL set but couldn't locate SSL DLLs. Please set LIB_EAY_RELEASE_DLL and SSL_EAY_RELEASE_DLL")
+  endif()
+  install (FILES "${LIB_EAY_RELEASE_DLL}"  
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
+    COMPONENT Libraries)  
+  install (FILES "${SSL_EAY_RELEASE_DLL}"  
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
+    COMPONENT Libraries)  
+endif()

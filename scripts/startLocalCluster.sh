@@ -46,21 +46,27 @@ fi
 
 SECONDARIES="$5"
 
+MINP=0.5
+MAXP=2.5
+COMP=100
+BASE=4001
+NATH=$(( $NRDBSERVERS + $NRCOORDINATORS + $NRAGENTS ))
+
 rm -rf cluster
 mkdir cluster
 echo Starting agency ... 
 if [ $NRAGENTS -gt 1 ]; then
    for aid in `seq 0 $(( $NRAGENTS - 2 ))`; do
-       port=$(( 4001 + $aid ))
+       port=$(( $BASE + $aid ))
        build/bin/arangod \
            -c none \
            --agency.id $aid \
+           --agency.compaction-step-size $COMP \
+           --agency.election-timeout-min $MINP \
+           --agency.election-timeout-max $MAXP \
            --agency.size $NRAGENTS \
            --agency.supervision true \
-           --agency.supervision-frequency 1 \
            --agency.wait-for-sync false \
-           --agency.election-timeout-min 0.2 \
-           --agency.election-timeout-max 1.0 \
            --database.directory cluster/data$port \
            --javascript.app-path ./js/apps \
            --javascript.startup-directory ./js \
@@ -69,37 +75,36 @@ if [ $NRAGENTS -gt 1 ]; then
            --server.authentication false \
            --server.endpoint tcp://127.0.0.1:$port \
            --server.statistics false \
-           --agency.compaction-step-size 1000 \
+           --server.threads $NATH \
            --log.force-direct true \
            > cluster/$port.stdout 2>&1 &
    done
 fi
 for aid in `seq 0 $(( $NRAGENTS - 1 ))`; do
-    endpoints="$endpoints --agency.endpoint tcp://localhost:$(( 4001 + $aid ))"          
+    endpoints="$endpoints --agency.endpoint tcp://localhost:$(( $BASE + $aid ))"          
 done
 build/bin/arangod \
     -c none \
     $endpoints \
     --agency.id $(( $NRAGENTS - 1 )) \
+    --agency.compaction-step-size $COMP \
+    --agency.election-timeout-min $MINP \
+    --agency.election-timeout-max $MAXP \
     --agency.notify true \
     --agency.size $NRAGENTS \
     --agency.supervision true \
-    --agency.supervision-frequency 1 \
     --agency.wait-for-sync false \
-    --agency.election-timeout-min 0.2 \
-    --agency.election-timeout-max 1.0 \
-    --database.directory cluster/data$(( 4001 + $aid )) \
+    --database.directory cluster/data$(( $BASE + $aid )) \
     --javascript.app-path ./js/apps \
     --javascript.startup-directory ./js \
     --javascript.v8-contexts 1 \
-    --log.file cluster/$(( 4001 + $aid )).log \
+    --log.file cluster/$(( $BASE + $aid )).log \
     --server.authentication false \
-    --server.endpoint tcp://127.0.0.1:$(( 4001 + $aid )) \
+    --server.endpoint tcp://127.0.0.1:$(( $BASE + $aid )) \
     --server.statistics false \
-    --agency.compaction-step-size 1000 \
+    --server.threads $NATH \
     --log.force-direct true \
-    > cluster/$(( 4001 + $aid )).stdout 2>&1 &
-sleep 5
+    > cluster/$(( $BASE + $aid )).stdout 2>&1 &
 
 start() {
     if [ "$1" == "dbserver" ]; then
@@ -114,7 +119,7 @@ start() {
     echo Starting $TYPE on port $PORT
     build/bin/arangod -c none \
                 --database.directory cluster/data$PORT \
-                --cluster.agency-endpoint tcp://127.0.0.1:4001 \
+                --cluster.agency-endpoint tcp://127.0.0.1:$BASE \
                 --cluster.my-address tcp://127.0.0.1:$PORT \
                 --server.endpoint tcp://127.0.0.1:$PORT \
                 --cluster.my-local-info $TYPE:127.0.0.1:$PORT \
@@ -142,12 +147,13 @@ startTerminal() {
     echo Starting $TYPE on port $PORT
     $XTERM $XTERMOPTIONS -e build/bin/arangod -c none \
                 --database.directory cluster/data$PORT \
-                --cluster.agency-endpoint tcp://127.0.0.1:4001 \
+                --cluster.agency-endpoint tcp://127.0.0.1:$BASE \
                 --cluster.my-address tcp://127.0.0.1:$PORT \
                 --server.endpoint tcp://127.0.0.1:$PORT \
                 --cluster.my-local-info $TYPE:127.0.0.1:$PORT \
                 --cluster.my-role $ROLE \
                 --log.file cluster/$PORT.log \
+                --log.level info \
                 --server.statistics true \
                 --server.threads 5 \
                 --javascript.startup-directory ./js \
@@ -168,12 +174,13 @@ startDebugger() {
     echo Starting $TYPE on port $PORT with debugger
     build/bin/arangod -c none \
                 --database.directory cluster/data$PORT \
-                --cluster.agency-endpoint tcp://127.0.0.1:4001 \
+                --cluster.agency-endpoint tcp://127.0.0.1:$BASE \
                 --cluster.my-address tcp://127.0.0.1:$PORT \
                 --server.endpoint tcp://127.0.0.1:$PORT \
                 --cluster.my-local-info $TYPE:127.0.0.1:$PORT \
                 --cluster.my-role $ROLE \
                 --log.file cluster/$PORT.log \
+                --log.level info \
                 --server.statistics false \
                 --server.threads 5 \
                 --javascript.startup-directory ./js \
@@ -195,12 +202,13 @@ startRR() {
     $XTERM $XTERMOPTIONS -e rr build/bin/arangod \
                 -c none \
                 --database.directory cluster/data$PORT \
-                --cluster.agency-endpoint tcp://127.0.0.1:4001 \
+                --cluster.agency-endpoint tcp://127.0.0.1:$BASE \
                 --cluster.my-address tcp://127.0.0.1:$PORT \
                 --server.endpoint tcp://127.0.0.1:$PORT \
                 --cluster.my-local-info $TYPE:127.0.0.1:$PORT \
                 --cluster.my-role $ROLE \
                 --log.file cluster/$PORT.log \
+                --log.level info \
                 --server.statistics true \
                 --server.threads 5 \
                 --javascript.startup-directory ./js \
@@ -273,12 +281,12 @@ if [ -n "$SECONDARIES" ]; then
     echo Starting Secondary $CLUSTER_ID on port $PORT
     build/bin/arangod -c none \
                 --database.directory cluster/data$PORT \
-                --cluster.agency-endpoint tcp://127.0.0.1:4001 \
+                --cluster.agency-endpoint tcp://127.0.0.1:$BASE \
                 --cluster.my-address tcp://127.0.0.1:$PORT \
                 --server.endpoint tcp://127.0.0.1:$PORT \
                 --cluster.my-id $CLUSTER_ID \
                 --log.file cluster/$PORT.log \
-                --server.statistics false \
+                --server.statistics true \
                 --javascript.startup-directory ./js \
                 --server.authentication false \
                 --javascript.app-path ./js/apps \

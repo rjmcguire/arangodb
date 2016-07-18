@@ -84,8 +84,8 @@ std::vector<check_t> Supervision::checkDBServers() {
   for (auto const& machine : machinesPlanned) {
 
     bool good = false;
-    std::string lastHeartbeatTime, lastHeartbeatStatus, lastHeartbeatAcked,
-      lastStatus, heartbeatTime, heartbeatStatus, serverID;
+    std::string lastHeartbeatTime, lastHeartbeatAcked, lastStatus, heartbeatTime,
+      heartbeatStatus, serverID;
 
     serverID        = machine.first;
     heartbeatTime   = _snapshot(syncPrefix + serverID + "/time").toJson();
@@ -165,7 +165,8 @@ std::vector<check_t> Supervision::checkDBServers() {
     del->openArray();
     del->openObject();
     for (auto const& srv : todelete) {
-      del->add(_agencyPrefix + healthPrefix + srv, VPackValue(VPackValueType::Object));
+      del->add(_agencyPrefix + healthPrefix + srv,
+               VPackValue(VPackValueType::Object));
       del->add("op", VPackValue("delete"));
       del->close();
     }
@@ -194,8 +195,8 @@ std::vector<check_t> Supervision::checkCoordinators() {
   for (auto const& machine : machinesPlanned) {
 
     bool good = false;
-    std::string lastHeartbeatTime, lastHeartbeatStatus, lastHeartbeatAcked,
-      lastStatus, heartbeatTime, heartbeatStatus, serverID;
+    std::string lastHeartbeatTime, lastHeartbeatAcked, lastStatus, heartbeatTime,
+      heartbeatStatus, serverID;
 
     serverID        = machine.first;
     heartbeatTime   = _snapshot(syncPrefix + serverID + "/time").toJson();
@@ -207,8 +208,6 @@ std::vector<check_t> Supervision::checkCoordinators() {
     try {           // Existing
       lastHeartbeatTime =
         _snapshot(healthPrefix + serverID + "/LastHeartbeatSent").toJson();
-      lastHeartbeatStatus =
-        _snapshot(healthPrefix + serverID + "/LastHeartbeatStatus").toJson();
       lastStatus = _snapshot(healthPrefix + serverID + "/Status").toJson();
       if (lastHeartbeatTime != heartbeatTime) { // Update
         good = true;
@@ -273,7 +272,8 @@ std::vector<check_t> Supervision::checkCoordinators() {
     del->openArray();
     del->openObject();
     for (auto const& srv : todelete) {
-      del->add(_agencyPrefix + healthPrefix + srv, VPackValue(VPackValueType::Object));
+      del->add(_agencyPrefix + healthPrefix + srv,
+               VPackValue(VPackValueType::Object));
       del->add("op", VPackValue("delete"));
       del->close();
     }
@@ -416,7 +416,6 @@ void Supervision::shrinkCluster () {
         return;
       }
     } catch (std::exception const& e) {
-      LOG(WARN) << job.second->slice().toJson();
       LOG_TOPIC(WARN, Logger::AGENCY)
         << "Failed to get job type of job " << job.first << ": " << e.what();
       return;
@@ -450,7 +449,8 @@ void Supervision::shrinkCluster () {
 
     // Minimum 1 DB server must remain
     if (availServers.size() == 1) {
-      LOG_TOPIC(DEBUG, Logger::AGENCY) << "Only one db server left for operation";
+      LOG_TOPIC(DEBUG, Logger::AGENCY) <<
+        "Only one db server left for operation";
       return;
     }
 
@@ -464,9 +464,9 @@ void Supervision::shrinkCluster () {
           if (replFact > maxReplFact) {
             maxReplFact = replFact;
           }
-        } catch (std::exception const& e) {
-          LOG_TOPIC(DEBUG, Logger::AGENCY) <<
-            "Cannot retrieve replication factor for collection " << collptr.first;
+        } catch (std::exception const&) {
+          LOG_TOPIC(DEBUG, Logger::AGENCY) << "Cannot retrieve replication " <<
+            "factor for collection " << collptr.first;
           return;
         }
       }
@@ -537,7 +537,7 @@ void Supervision::getUniqueIds() {
   while (!this->isStopping()) {
     try {
       latestId = std::stoul(
-          _agent->readDB().get(_agencyPrefix + "/Sync/LatestID").slice().toJson());
+        _agent->readDB().get(_agencyPrefix + "/Sync/LatestID").slice().toJson());
     } catch (...) {
       std::this_thread::sleep_for (std::chrono::seconds(1));
       continue;
@@ -554,6 +554,14 @@ void Supervision::getUniqueIds() {
     uniq.close();
 
     auto result = transact(_agent, uniq);
+
+    if (!result.accepted || result.indices.empty()) {
+      LOG_TOPIC(DEBUG, Logger::AGENCY)
+        << "We have lost agency leadership. Stopping any supervision processing "
+        << __FILE__ << __LINE__;
+      return;
+    }
+    
     if (result.indices[0]) {
       _agent->waitFor(result.indices[0]);
       _jobId = latestId;

@@ -27,7 +27,7 @@
 #include "Basics/Common.h"
 #include "Basics/hashes.h"
 #include "Basics/ShortestPathFinder.h"
-#include "Basics/Traverser.h"
+#include "Aql/AqlValue.h"
 #include "Aql/AstNode.h"
 #include "Utils/CollectionNameResolver.h"
 #include "Utils/Transaction.h"
@@ -40,43 +40,6 @@ class Builder;
 class Slice;
 }
 namespace traverser {
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief Template for a vertex id. Is simply a pair of cid and key
-/// NOTE: This struct will never free the value asigned to char const* key
-///       The environment has to make sure that the string it points to is
-///       not freed as long as this struct is in use!
-////////////////////////////////////////////////////////////////////////////////
-
-struct VertexId {
-  TRI_voc_cid_t cid;
-  char const* key;
-
-  VertexId() : cid(0), key("") {}
-
-  VertexId(TRI_voc_cid_t cid, char const* key) : cid(cid), key(key) {}
-
-  bool operator==(VertexId const& other) const {
-    if (cid == other.cid) {
-      return strcmp(key, other.key) == 0;
-    }
-    return false;
-  }
-
-  std::string toString(arangodb::CollectionNameResolver const* resolver) const {
-    return resolver->getCollectionNameCluster(cid) + "/" + std::string(key);
-  }
-};
-
-// EdgeId and VertexId are similar here. both have a key and a cid
-typedef VertexId EdgeId;
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief Helper function to convert an _id string into a VertexId
-////////////////////////////////////////////////////////////////////////////////
-
-VertexId IdStringToVertexId(arangodb::CollectionNameResolver const* resolver,
-                            std::string const& vertex);
 
 class TraverserExpression {
  public:
@@ -171,9 +134,6 @@ class ShortestPath {
   size_t length() { return _vertices.size(); };
 
  private:
-  /// @brief Local builder to create a search value
-  arangodb::velocypack::Builder _searchBuilder;
-
   /// @brief Count how many documents have been read
   size_t _readDocuments;
 
@@ -220,8 +180,7 @@ class TraversalPath {
   /// @brief Builds only the last vertex as VelocyPack
   //////////////////////////////////////////////////////////////////////////////
 
-  virtual void lastVertexToVelocyPack(Transaction*,
-                                      arangodb::velocypack::Builder&) = 0;
+  virtual aql::AqlValue lastVertexToAqlValue(Transaction*) = 0;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief Gets the amount of read documents
@@ -245,7 +204,6 @@ struct TraverserOptions {
   std::vector<std::string> _collections;
   std::vector<TRI_edge_direction_e> _directions;
   std::vector<arangodb::Transaction::IndexHandle> _indexHandles;
-  arangodb::velocypack::Builder _builder;
 
  public:
   uint64_t minDepth;
@@ -258,13 +216,43 @@ struct TraverserOptions {
 
   UniquenessLevel uniqueEdges;
 
-  explicit TraverserOptions(arangodb::Transaction* trx)
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief a vector containing all information for early pruning
+  //////////////////////////////////////////////////////////////////////////////
+
+  std::unordered_map<size_t, std::vector<TraverserExpression*>> const* expressions;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief whether or not we have valid expressions
+  //////////////////////////////////////////////////////////////////////////////
+
+  bool hasEdgeConditions;
+
+  bool hasVertexConditions;
+
+  explicit TraverserOptions(
+      arangodb::Transaction* trx,
+      std::unordered_map<size_t, std::vector<TraverserExpression*>> const* expr)
       : _trx(trx),
         minDepth(1),
         maxDepth(1),
         useBreadthFirst(false),
         uniqueVertices(UniquenessLevel::NONE),
-        uniqueEdges(UniquenessLevel::PATH) {}
+        uniqueEdges(UniquenessLevel::PATH),
+        expressions(expr),
+        hasEdgeConditions(false),
+        hasVertexConditions(false) {
+    TRI_ASSERT(expressions != nullptr);
+    for (auto& it : *expressions) {
+      for (auto& it2 : it.second) {
+        if (it2->isEdgeAccess) {
+          hasEdgeConditions = true;
+        } else {
+          hasVertexConditions = true;
+        }
+      }
+    }
+  }
 
   void setCollections(std::vector<std::string> const&, TRI_edge_direction_e);
   void setCollections(std::vector<std::string> const&,
@@ -272,40 +260,30 @@ struct TraverserOptions {
 
   size_t collectionCount() const;
 
-  bool getCollection(size_t const, std::string&, TRI_edge_direction_e&) const;
+  bool getCollection(size_t, std::string&, TRI_edge_direction_e&) const;
 
   bool getCollectionAndSearchValue(size_t, std::string const&, std::string&,
                                    arangodb::Transaction::IndexHandle&,
-                                   arangodb::velocypack::Builder&);
+                                   arangodb::velocypack::Builder&) const;
 };
 
 class Traverser {
+  friend class BreadthFirstEnumerator;
+  friend class DepthFirstEnumerator;
+
  public:
   //////////////////////////////////////////////////////////////////////////////
   /// @brief Constructor. This is an abstract only class.
   //////////////////////////////////////////////////////////////////////////////
 
-  explicit Traverser(arangodb::Transaction* trx)
+  explicit Traverser(TraverserOptions& opts)
       : _readDocuments(0),
         _filteredPaths(0),
         _pruneNext(false),
         _done(true),
-        _opts(trx),
-        _expressions(nullptr) {}
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief Constructor. This is an abstract only class.
-  //////////////////////////////////////////////////////////////////////////////
-
-  Traverser(TraverserOptions& opts,
-            std::unordered_map<size_t, std::vector<TraverserExpression*>> const*
-                expressions)
-      : _readDocuments(0),
-        _filteredPaths(0),
-        _pruneNext(false),
-        _done(true),
-        _opts(opts),
-        _expressions(expressions) {}
+        _opts(opts) {
+    
+  }
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief Destructor
@@ -326,8 +304,7 @@ class Traverser {
   size_t skip(size_t amount) {
     size_t skipped = 0;
     for (size_t i = 0; i < amount; ++i) {
-      std::unique_ptr<TraversalPath> p(next());
-      if (p == nullptr) {
+      if (!next()) {
         _done = true;
         break;
       }
@@ -340,7 +317,53 @@ class Traverser {
   /// @brief Get the next possible path in the graph.
   //////////////////////////////////////////////////////////////////////////////
 
-  virtual TraversalPath* next() = 0;
+  virtual bool next() = 0;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to load edges for a node
+  //////////////////////////////////////////////////////////////////////////////
+
+  virtual void getEdge(std::string const&, std::vector<std::string>&, size_t*&,
+                       size_t&) = 0;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to load all edges for a list of nodes
+  //////////////////////////////////////////////////////////////////////////////
+
+  virtual void getAllEdges(std::string const&, std::unordered_set<std::string>&,
+                           size_t) = 0;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to load the other sides vertex of an edge
+  ///        Returns true if the vertex passes filtering conditions
+  //////////////////////////////////////////////////////////////////////////////
+
+  virtual bool getVertex(std::string const&, std::string const&, size_t,
+                         std::string&) = 0;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Builds only the last vertex as AQLValue
+  //////////////////////////////////////////////////////////////////////////////
+
+  virtual aql::AqlValue lastVertexToAqlValue() = 0;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Builds only the last edge as AQLValue
+  //////////////////////////////////////////////////////////////////////////////
+
+  virtual aql::AqlValue lastEdgeToAqlValue() = 0;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Builds the complete path as AQLValue
+  ///        Has the format:
+  ///        {
+  ///           vertices: [<vertex-as-velocypack>],
+  ///           edges: [<edge-as-velocypack>]
+  ///        }
+  ///        NOTE: Will clear the given buffer and will leave the path in it.
+  //////////////////////////////////////////////////////////////////////////////
+
+  virtual aql::AqlValue pathToAqlValue(arangodb::velocypack::Builder&) = 0;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief Get the number of filtered paths
@@ -361,6 +384,8 @@ class Traverser {
     _readDocuments = 0;
     return tmp;
   }
+  
+  TraverserOptions const* options() { return &_opts; }
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief Prune the current path prefix. Do not evaluate it any further.
@@ -408,46 +433,32 @@ class Traverser {
   TraverserOptions _opts;
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief a vector containing all information for early pruning
+  /// @brief Function to fetch the real data of a vertex into an AQLValue
   //////////////////////////////////////////////////////////////////////////////
 
-  std::unordered_map<size_t, std::vector<TraverserExpression*>> const*
-      _expressions;
+  virtual aql::AqlValue fetchVertexData(std::string const&) = 0;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to fetch the real data of an edge into an AQLValue
+  //////////////////////////////////////////////////////////////////////////////
+
+  virtual aql::AqlValue fetchEdgeData(std::string const&) = 0;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to add the real data of a vertex into a velocypack builder
+  //////////////////////////////////////////////////////////////////////////////
+
+  virtual void addVertexToVelocyPack(std::string const&,
+                                     arangodb::velocypack::Builder&) = 0;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to add the real data of an edge into a velocypack builder
+  //////////////////////////////////////////////////////////////////////////////
+
+  virtual void addEdgeToVelocyPack(std::string const&,
+                                   arangodb::velocypack::Builder&) = 0;
 };
 }  // traverser
 }  // arangodb
-
-namespace std {
-template <>
-struct hash<arangodb::traverser::VertexId> {
- public:
-  size_t operator()(arangodb::traverser::VertexId const& s) const {
-    size_t h1 = std::hash<TRI_voc_cid_t>()(s.cid);
-    size_t h2 = static_cast<size_t>(TRI_FnvHashString(s.key));
-    return h1 ^ (h2 << 1);
-  }
-};
-
-template <>
-struct equal_to<arangodb::traverser::VertexId> {
- public:
-  bool operator()(arangodb::traverser::VertexId const& s,
-                  arangodb::traverser::VertexId const& t) const {
-    return s.cid == t.cid && strcmp(s.key, t.key) == 0;
-  }
-};
-
-template <>
-struct less<arangodb::traverser::VertexId> {
- public:
-  bool operator()(arangodb::traverser::VertexId const& lhs,
-                  arangodb::traverser::VertexId const& rhs) {
-    if (lhs.cid != rhs.cid) {
-      return lhs.cid < rhs.cid;
-    }
-    return strcmp(lhs.key, rhs.key) < 0;
-  }
-};
-}
 
 #endif

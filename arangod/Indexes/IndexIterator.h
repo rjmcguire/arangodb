@@ -25,6 +25,7 @@
 #define ARANGOD_INDEXES_INDEX_ITERATOR_H 1
 
 #include "Basics/Common.h"
+#include "Cluster/ServerState.h"
 #include "VocBase/vocbase.h"
 
 namespace arangodb {
@@ -39,8 +40,8 @@ struct IndexIteratorContext {
   IndexIteratorContext& operator=(IndexIteratorContext const&) = delete;
   
   IndexIteratorContext() = delete;
-  IndexIteratorContext(TRI_vocbase_t*, CollectionNameResolver const*);
-  explicit IndexIteratorContext(TRI_vocbase_t*);
+  IndexIteratorContext(TRI_vocbase_t*, CollectionNameResolver const*, ServerState::RoleEnum);
+  //explicit IndexIteratorContext(TRI_vocbase_t*);
 
   ~IndexIteratorContext();
 
@@ -48,10 +49,11 @@ struct IndexIteratorContext {
 
   bool isCluster() const;
 
-  int resolveId(char const*, TRI_voc_cid_t&, char const*&) const;
+  int resolveId(char const*, size_t, TRI_voc_cid_t&, char const*&, size_t&) const;
 
   TRI_vocbase_t* vocbase;
   mutable CollectionNameResolver const* resolver;
+  ServerState::RoleEnum serverRole;
   bool ownsResolver;
 };
 
@@ -75,6 +77,28 @@ class IndexIterator {
   virtual void reset();
 
   virtual void skip(uint64_t count, uint64_t& skipped);
+};
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Special iterator if the condition cannot have any result
+////////////////////////////////////////////////////////////////////////////////
+
+class EmptyIndexIterator : public IndexIterator {
+  public:
+    EmptyIndexIterator() {}
+    ~EmptyIndexIterator() {}
+
+    TRI_doc_mptr_t* next() override {
+      return nullptr;
+    }
+
+    void nextBabies(std::vector<TRI_doc_mptr_t*>&, size_t) override {}
+
+    void reset() override {}
+
+    void skip(uint64_t, uint64_t& skipped) override {
+      skipped = 0;
+    }
 };
 
 ////////////////////////////////////////////////////////////////////////////////

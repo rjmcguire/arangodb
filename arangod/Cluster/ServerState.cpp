@@ -789,15 +789,7 @@ ServerState::RoleEnum ServerState::checkCoordinatorsList(
   std::string const key = "Plan/Coordinators";
 
   AgencyComm comm;
-  AgencyCommResult result;
-
-  {
-    AgencyCommLocker locker("Plan", "READ");
-
-    if (locker.successful()) {
-      result = comm.getValues(key);
-    }
-  }
+  AgencyCommResult result = comm.getValues(key);
 
   if (!result.successful()) {
     std::string const endpoints = AgencyComm::getEndpointsString();
@@ -838,15 +830,7 @@ int ServerState::lookupLocalInfoToId(std::string const& localInfo,
   int count = 0;
   while (++count <= 600) {
     AgencyComm comm;
-    AgencyCommResult result;
-
-    {
-      AgencyCommLocker locker("Target", "READ");
-
-      if (locker.successful()) {
-        result = comm.getValues(key);
-      }
-    }
+    AgencyCommResult result = comm.getValues(key);
 
     if (!result.successful()) {
       std::string const endpoints = AgencyComm::getEndpointsString();
@@ -897,15 +881,7 @@ ServerState::RoleEnum ServerState::checkServersList(std::string const& id) {
   std::string const key = "Plan/DBServers";
 
   AgencyComm comm;
-  AgencyCommResult result;
-
-  {
-    AgencyCommLocker locker("Plan", "READ");
-
-    if (locker.successful()) {
-      result = comm.getValues(key);
-    }
-  }
+  AgencyCommResult result = comm.getValues(key);
 
   if (!result.successful()) {
     std::string const endpoints = AgencyComm::getEndpointsString();
@@ -955,19 +931,12 @@ bool ServerState::storeRole(RoleEnum role) {
   if (isClusterRole(role)) {
     AgencyComm comm;
     AgencyCommResult result;
-    std::unique_ptr<AgencyCommLocker> locker;
-
-    locker.reset(new AgencyCommLocker("Current", "WRITE"));
-    if (!locker->successful()) {
-      return false;
-    }
 
     if (role == ServerState::ROLE_COORDINATOR) {
       VPackBuilder builder;
       try {
         builder.add(VPackValue("none"));
       } catch (...) {
-        locker->unlock();
         LOG(FATAL) << "out of memory"; FATAL_ERROR_EXIT();
       }
 
@@ -976,7 +945,6 @@ bool ServerState::storeRole(RoleEnum role) {
         comm.setValue("Current/Coordinators/" + _id, builder.slice(), 0.0);
 
       if (!result.successful()) {
-        locker->unlock();
         LOG(FATAL) << "unable to register coordinator in agency"; FATAL_ERROR_EXIT();
       }
     } else if (role == ServerState::ROLE_PRIMARY) {
@@ -984,7 +952,6 @@ bool ServerState::storeRole(RoleEnum role) {
       try {
         builder.add(VPackValue("none"));
       } catch (...) {
-        locker->unlock();
         LOG(FATAL) << "out of memory"; FATAL_ERROR_EXIT();
       }
 
@@ -993,7 +960,6 @@ bool ServerState::storeRole(RoleEnum role) {
         comm.setValue("Current/DBServers/" + _id, builder.slice(), 0.0);
 
       if (!result.successful()) {
-        locker->unlock();
         LOG(FATAL) << "unable to register db server in agency"; FATAL_ERROR_EXIT();
       }
     } else if (role == ServerState::ROLE_SECONDARY) {
@@ -1002,20 +968,22 @@ bool ServerState::storeRole(RoleEnum role) {
       try {
         builder.add(VPackValue(keyName));
       } catch (...) {
-        locker->unlock();
         LOG(FATAL) << "out of memory"; FATAL_ERROR_EXIT();
       }
+
+      std::string myId (
+        "Current/DBServers/" + ServerState::instance()->getPrimaryId());
+      AgencyOperation addMe(
+        myId, AgencyValueOperationType::SET, builder.slice());
+      AgencyOperation incrementVersion(
+        "Plan/Version", AgencySimpleOperationType::INCREMENT_OP);
+      AgencyPrecondition precondition(myId, AgencyPrecondition::EMPTY, true);
+      AgencyWriteTransaction trx({addMe, incrementVersion}, precondition);
       
       // register server
-      AgencyCommResult result = comm.casValue(
-          "Current/DBServers/" + ServerState::instance()->getPrimaryId(),
-          builder.slice(),
-          true,
-          0.0,
-          0.0);
+      AgencyCommResult result = comm.sendTransactionWithFailover(trx, 0.0);
 
       if (!result.successful()) {
-        locker->unlock();
         // mop: fail gracefully (allow retry)
         return false;
       }

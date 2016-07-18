@@ -187,13 +187,13 @@ add_executable(${BIN_ARANGOD}
   GeoIndex/GeoIndex.cpp
   HttpServer/AsyncJobManager.cpp
   HttpServer/HttpCommTask.cpp
-  HttpServer/HttpHandler.cpp
-  HttpServer/HttpHandlerFactory.cpp
   HttpServer/HttpListenTask.cpp
   HttpServer/HttpServer.cpp
   HttpServer/HttpServerJob.cpp
   HttpServer/HttpsCommTask.cpp
   HttpServer/HttpsServer.cpp
+  HttpServer/RestHandler.cpp
+  HttpServer/RestHandlerFactory.cpp
   HttpServer/PathHandler.cpp
   Indexes/EdgeIndex.cpp
   Indexes/FulltextIndex.cpp
@@ -304,7 +304,7 @@ add_executable(${BIN_ARANGOD}
   VocBase/Graphs.cpp
   VocBase/KeyGenerator.cpp
   VocBase/MasterPointers.cpp
-  VocBase/SingleServerTraversalPath.cpp
+  VocBase/PathEnumerator.cpp
   VocBase/SingleServerTraverser.cpp
   VocBase/Traverser.cpp
   VocBase/cleanup.cpp

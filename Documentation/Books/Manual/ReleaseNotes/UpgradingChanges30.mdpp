@@ -60,13 +60,13 @@ used a pattern `collection-<id>` without the random number.
 
 !SECTION User Management
 
-Unlike ArangoDB 2, ArangoDB 3.0 users are now separated from databases
-and you can grant one or more database permission to a user.
+Unlike ArangoDB 2.x, ArangoDB 3.0 users are now separated from databases, and you can 
+grant one or more database permissions to a user.
 
-If you one to mimic the behavior of ArangoDB, you should name your
-users like `username@dbname`.
+If you want to mimic the behavior of ArangoDB, you should name your users like 
+`username@dbname`.
 
-Users that can access to the *_system* database are allowed to manage users and
+Users that can access the *_system* database are allowed to manage users and
 permissions for all databases.
 
 !SECTION Edges and edges attributes
@@ -701,7 +701,7 @@ ArangoDB returned an HTTP status code 200 (ok). Clients can still send this head
 ArangoDB 3.0 but this will not influence the HTTP status code produced by ArangoDB.
 
 The "location" header produced by ArangoDB 3.0 will now always contain the database 
-name. This was also the default in previous versions of ArangoDB, but the behaviour
+name. This was also the default in previous versions of ArangoDB, but the behavior
 could be overridden by sending the HTTP header `x-arango-version: 1.4`. Clients can
 still send the header, but this will not make the database name in the "location"
 response header disappear.
@@ -842,7 +842,7 @@ test or development setup:
 ```
 
 Setting this option will lead to the ArangoDB server responding with an 
-`Access-Control-Allow-Origin: true` HTTP header to all incoming CORS requests.
+`Access-Control-Allow-Credentials: true` HTTP header to all incoming CORS requests.
 
 !SECTION Command-line options
 
@@ -1052,6 +1052,14 @@ and all client tools uses these APIs.
 
 In order to connect to earlier versions of ArangoDB with the client tools, an older
 version of the client tools needs to be kept installed.
+
+!SUBSECTION Command-line options added
+
+All client tools in 3.0 provide an option `--server.max-packet-size` for controlling
+the maximum size of HTTP packets to be handled by the client tools. The default value
+is 128 MB, as in previous versions of ArangoDB. In contrast to previous versions in
+which the value was hard-coded, the option is now configurable. It can be increased to
+make the client tools handle very large HTTP result messages sent by the server. 
 
 !SUBSECTION Command-line options changed
 

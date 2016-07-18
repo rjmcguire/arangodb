@@ -61,6 +61,7 @@ set(ARANGODB_VERSION
 # for NSIS
 set(ARANGODB_DISPLAY_NAME       "ArangoDB")
 set(ARANGODB_URL_INFO_ABOUT     "https://www.arangodb.com")
+set(ARANGODB_HELP_LINK          "https://docs.arangodb.com/${ARANGODB_VERSION_MAJOR}.${ARANGODB_VERSION_MINOR}/")
 set(ARANGODB_CONTACT            "hackers@arangodb.com")
 set(ARANGODB_FRIENDLY_STRING    "ArangoDB - the multi-model database")
 
@@ -70,6 +71,7 @@ set(ARANGO_DUMP_FRIENDLY_STRING    "arangodump - export")
 set(ARANGO_RESTORE_FRIENDLY_STRING "arangrestore - importer")
 set(ARANGO_IMP_FRIENDLY_STRING     "arangoimp - TSV/CSV/JSON importer")
 set(ARANGOSH_FRIENDLY_STRING       "arangosh - commandline client")
+set(ARANGO_VPACK_FRIENDLY_STRING   "arangovpack - vpack printer")
 
 # libraries
 set(LIB_ARANGO        arango)
@@ -82,6 +84,7 @@ set(BIN_ARANGODUMP    arangodump)
 set(BIN_ARANGOIMP     arangoimp)
 set(BIN_ARANGORESTORE arangorestore)
 set(BIN_ARANGOSH      arangosh)
+set(BIN_ARANGOVPACK   arangovpack)
 
 # test binaries
 set(TEST_BASICS_SUITE basics_suite)
@@ -118,6 +121,11 @@ configure_file(
 ################################################################################
 ## OPERATION SYSTEM
 ################################################################################
+
+option(HOMEBREW
+  "whether to install for homebrew"
+  Off
+)
 
 if (WIN32)
   set(WINDOWS TRUE)
@@ -328,12 +336,12 @@ else ()
 
   option(USE_OPTIMIZE_FOR_ARCHITECTURE "try to determine CPU architecture" ON)
 
-  if (NOT ${USE_OPTIMIZE_FOR_ARCHITECTURE})
+  if (USE_OPTIMIZE_FOR_ARCHITECTURE)
     # mop: core2 (merom) is our absolute minimum!
-    SET(TARGET_ARCHITECTURE "merom")
+    # SET(TARGET_ARCHITECTURE "merom")
+    include(OptimizeForArchitecture)
+    OptimizeForArchitecture()
   endif ()
-  include(OptimizeForArchitecture)
-  OptimizeForArchitecture()
 
   set(BASE_FLAGS "${Vc_ARCHITECTURE_FLAGS} ${BASE_FLAGS}")
 endif ()
@@ -424,12 +432,19 @@ option(USE_JEMALLOC
   ${JEMALLOC_DEFAULT_VALUE}
 )
 
+set(FORCE_JEMALLOC_LIB "" CACHE STRING "force this library command to link jemalloc")
+
 if (USE_JEMALLOC)
   if (NOT JEMALLOC_FOUND)
     message(FATAL_ERROR "jemalloc build was requested but jemalloc not found")
   endif ()
   add_definitions("-DARANGODB_HAVE_JEMALLOC=1")
-  set(SYS_LIBS ${SYS_LIBS} ${JEMALLOC_jemalloc_LIBRARY})
+
+  if (FORCE_JEMALLOC_LIB STREQUAL "")
+    set(SYS_LIBS ${SYS_LIBS} ${JEMALLOC_jemalloc_LIBRARY})
+  else ()
+    set(SYS_LIBS ${SYS_LIBS} ${FORCE_JEMALLOC_LIB})
+  endif ()
 endif ()
 
 ################################################################################
@@ -673,12 +688,34 @@ add_definitions("-DARANGODB_LIBEV_VERSION=\"${LIBEV_VERSION}\"")
 ## OPENSSL
 ################################################################################
 
+find_package(OpenSSL REQUIRED)
 include_directories(${OPENSSL_INCLUDE_DIR})
 add_definitions(-DARANGODB_OPENSSL_VERSION=\"${OPENSSL_VERSION}\")
+
+if (OPENSSL_VERSION)
+  string(REPLACE "." ";" OPENSSL_VERSION_LIST ${OPENSSL_VERSION})
+  list(GET OPENSSL_VERSION_LIST 0 OPENSSL_VERSION_MAJOR)
+  list(GET OPENSSL_VERSION_LIST 1 OPENSSL_VERSION_MINOR)
+  if ("${OPENSSL_VERSION_MAJOR}" GREATER 0 AND "${OPENSSL_VERSION_MINOR}" GREATER 0)
+    option(USE_OPENSSL_NO_SSL2
+      "do not use OPENSSL_NO_SSL2"
+      ON
+    )
+  else ()
+    option(USE_OPENSSL_NO_SSL2
+      "do not use OPENSSL_NO_SSL2"
+      OFF
+    )
+  endif ()
+endif ()
 
 if (USE_OPENSSL_NO_SSL2)
   add_definitions(-DOPENSSL_NO_SSL2)
 endif ()
+
+if(WIN32)
+  option(BUNDLE_OPENSSL "Bundle OpenSSL library" ON)
+endif()
 
 ################################################################################
 ## V8
@@ -798,9 +835,6 @@ add_dependencies(arangodump    zlibstatic)
 add_dependencies(arangoimp     zlibstatic)
 add_dependencies(arangorestore zlibstatic)
 add_dependencies(arangosh      zlibstatic)
-if (TARGET prepare_debian)
-  add_dependencies(arangod       prepare_debian)
-endif()
 
 if (NOT USE_PRECOMPILED_V8)
   # all binaries depend on v8_build because it contains ICU as well

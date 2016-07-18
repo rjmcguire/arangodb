@@ -1208,10 +1208,14 @@ TRI_collection_t* TRI_CreateCollection(
 
   TRI_IF_FAILURE("CreateCollection::tempDirectory") { return nullptr; }
 
-  // create a temporary file
+  // create a temporary file (.tmp)
   std::string const tmpfile(
       arangodb::basics::FileUtils::buildFilename(tmpname.c_str(), ".tmp"));
   res = TRI_WriteFile(tmpfile.c_str(), "", 0);
+ 
+  // this file will be renamed to this filename later...
+  std::string const tmpfile2(
+      arangodb::basics::FileUtils::buildFilename(dirname.c_str(), ".tmp"));
 
   TRI_IF_FAILURE("CreateCollection::tempFile") { return nullptr; }
 
@@ -1257,6 +1261,9 @@ TRI_collection_t* TRI_CreateCollection(
   }
 
   InitCollection(vocbase, collection, dirname, parameters);
+ 
+  // delete .tmp file
+  TRI_UnlinkFile(tmpfile2.c_str());
 
   return collection;
 }
@@ -1358,13 +1365,15 @@ VocbaseCollectionInfo::VocbaseCollectionInfo(TRI_vocbase_t* vocbase,
 
 VocbaseCollectionInfo::VocbaseCollectionInfo(TRI_vocbase_t* vocbase,
                                              char const* name,
-                                             VPackSlice const& options)
-    : VocbaseCollectionInfo(vocbase, name, TRI_COL_TYPE_DOCUMENT, options) {}
+                                             VPackSlice const& options, 
+                                             bool forceIsSystem)
+    : VocbaseCollectionInfo(vocbase, name, TRI_COL_TYPE_DOCUMENT, options, forceIsSystem) {}
 
 VocbaseCollectionInfo::VocbaseCollectionInfo(TRI_vocbase_t* vocbase,
                                              char const* name,
                                              TRI_col_type_e type,
-                                             VPackSlice const& options)
+                                             VPackSlice const& options,
+                                             bool forceIsSystem)
     : _version(TRI_COL_VERSION),
       _type(type),
       _revision(0),
@@ -1512,7 +1521,7 @@ VocbaseCollectionInfo::VocbaseCollectionInfo(TRI_vocbase_t* vocbase,
         "indexBuckets must be a two-power between 1 and 1024");
   }
 
-  if (!TRI_IsAllowedNameCollection(_isSystem, _name)) {
+  if (!TRI_IsAllowedNameCollection(_isSystem || forceIsSystem, _name)) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_ARANGO_ILLEGAL_NAME);
   }
 
@@ -1556,7 +1565,7 @@ VocbaseCollectionInfo VocbaseCollectionInfo::fromFile(
   VPackBuilder b2 = VPackCollection::merge(slice, isSystem, false);
   slice = b2.slice();
 
-  VocbaseCollectionInfo info(vocbase, collectionName, slice);
+  VocbaseCollectionInfo info(vocbase, collectionName, slice, isSystemValue);
 
   // warn about wrong version of the collection
   if (versionWarning && info.version() < TRI_COL_VERSION_20) {
@@ -1797,6 +1806,7 @@ void TRI_CreateVelocyPackCollectionInfo(
   builder.add("name", VPackValue(info.name()));
   builder.add("isVolatile", VPackValue(info.isVolatile()));
   builder.add("waitForSync", VPackValue(info.waitForSync()));
+  builder.add("isSystem", VPackValue(info.isSystem()));
 
   auto opts = info.keyOptions();
   if (opts.get() != nullptr) {

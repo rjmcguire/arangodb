@@ -36,8 +36,20 @@ using namespace arangodb;
 using namespace arangodb::application_features;
 using namespace arangodb::rest;
 
+std::unordered_set<Task*> V8PeriodicTask::RUNNING;
+Mutex V8PeriodicTask::RUNNING_LOCK;
+
+void V8PeriodicTask::jobDone(Task* task) {
+  try {
+    MUTEX_LOCKER(guard, V8PeriodicTask::RUNNING_LOCK);
+    RUNNING.erase(task);
+  } catch (...) {
+    // ignore any memory error
+  }
+}
+
 V8PeriodicTask::V8PeriodicTask(std::string const& id, std::string const& name,
-                               TRI_vocbase_t* vocbase, 
+                               TRI_vocbase_t* vocbase,
                                double offset, double period,
                                std::string const& command,
                                std::shared_ptr<VPackBuilder> parameters,
@@ -60,10 +72,7 @@ V8PeriodicTask::~V8PeriodicTask() {
   TRI_ReleaseVocBase(_vocbase);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief get a task specific description in JSON format
-////////////////////////////////////////////////////////////////////////////////
-
+// get a task specific description in JSON format
 void V8PeriodicTask::getDescription(VPackBuilder& builder) const {
   PeriodicTask::getDescription(builder);
   TRI_ASSERT(builder.isOpenObject());
@@ -73,22 +82,28 @@ void V8PeriodicTask::getDescription(VPackBuilder& builder) const {
   builder.add("database", VPackValue(_vocbase->_name));
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief handles the next tick
-////////////////////////////////////////////////////////////////////////////////
-
+// handles the next tick
 bool V8PeriodicTask::handlePeriod() {
-  TRI_ASSERT(DispatcherFeature::DISPATCHER != nullptr);
-  
-  std::unique_ptr<Job> job(new V8Job(
-      _vocbase, "(function (params) { " + _command + " } )(params);",
-      _parameters, _allowUseDatabase));
-  
   if (DispatcherFeature::DISPATCHER == nullptr) {
-    LOG(WARN) << "could not add task " << _command << " to non-existing queue";
+    LOG(WARN) << "could not add task " << _command << ", no dispatcher known";
     return false;
   }
-  
+
+  {
+    MUTEX_LOCKER(guard, V8PeriodicTask::RUNNING_LOCK);
+
+    if (RUNNING.find(this) != RUNNING.end()) {
+      LOG(DEBUG) << "old task still running, skipping";
+      return true;
+    }
+
+    RUNNING.insert(this);
+  }
+
+  std::unique_ptr<Job> job(new V8Job(
+      _vocbase, "(function (params) { " + _command + " } )(params);",
+      _parameters, _allowUseDatabase, this));
+
   DispatcherFeature::DISPATCHER->addJob(job, false);
 
   return true;

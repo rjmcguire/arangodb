@@ -25,6 +25,9 @@
 #define ARANGOD_SINGLE_SERVER_TRAVERSER_H 1
 
 #include "VocBase/Traverser.h"
+#include "Aql/AqlValue.h"
+#include "Utils/OperationCursor.h"
+#include "VocBase/PathEnumerator.h"
 
 namespace arangodb {
 
@@ -32,13 +35,13 @@ class EdgeIndex;
 
 namespace traverser {
 
-class SingleServerTraverser : public Traverser {
+class PathEnumerator;
 
-  friend class SingleServerTraversalPath;
+class SingleServerTraverser final : public Traverser {
 
  private:
 
-  class VertexGetter : public arangodb::basics::VertexGetter<std::string, std::string> {
+  class VertexGetter {
    public:
     explicit VertexGetter(SingleServerTraverser* traverser)
         : _traverser(traverser) {}
@@ -46,7 +49,7 @@ class SingleServerTraverser : public Traverser {
     virtual ~VertexGetter() = default;
 
     virtual bool getVertex(std::string const&, std::string const&, size_t,
-                           std::string&) override;
+                           std::string&);
     virtual void reset(std::string const&);
 
    protected:
@@ -69,19 +72,16 @@ class SingleServerTraverser : public Traverser {
     std::unordered_set<std::string> _returnedVertices;
   };
 
-
-
   //////////////////////////////////////////////////////////////////////////////
   /// @brief callable class to load edges based on opts.
   //////////////////////////////////////////////////////////////////////////////
 
-  class EdgeGetter
-      : public arangodb::basics::EdgeGetter<std::string, std::string,
-                                            arangodb::velocypack::ValueLength> {
+  class EdgeGetter {
+
    public:
     EdgeGetter(SingleServerTraverser* traverser,
-                        TraverserOptions const& opts,
-                        Transaction* trx)
+               TraverserOptions const& opts,
+               Transaction* trx)
         : _traverser(traverser), _opts(opts), _trx(trx) {}
 
     //////////////////////////////////////////////////////////////////////////////
@@ -89,10 +89,9 @@ class SingleServerTraverser : public Traverser {
     //////////////////////////////////////////////////////////////////////////////
 
     void getEdge(std::string const&, std::vector<std::string>&,
-                 arangodb::velocypack::ValueLength*&, size_t&) override;
+                 size_t*&, size_t&);
 
-    void getAllEdges(std::string const&, std::vector<std::string>&, size_t) override;
-
+    void getAllEdges(std::string const&, std::unordered_set<std::string>&, size_t);
 
    private:
 
@@ -100,25 +99,16 @@ class SingleServerTraverser : public Traverser {
     /// @brief Get the next valid cursor
     //////////////////////////////////////////////////////////////////////////////
 
-    bool nextCursor(std::string const&, size_t&,
-                    arangodb::velocypack::ValueLength*&);
+    bool nextCursor(std::string const&, size_t&, size_t*&);
 
     //////////////////////////////////////////////////////////////////////////////
     /// @brief Get the next edge
     //////////////////////////////////////////////////////////////////////////////
 
-    void nextEdge(std::string const&, size_t&,
-                  arangodb::velocypack::ValueLength*&,
+    void nextEdge(std::string const&, size_t&, size_t*&,
                   std::vector<std::string>&);
 
     SingleServerTraverser* _traverser;
-
-    //////////////////////////////////////////////////////////////////////////////
-    /// @brief Cache for indexes. Maps collectionName to Index
-    //////////////////////////////////////////////////////////////////////////////
-
-    std::unordered_map<std::string, std::pair<TRI_voc_cid_t, EdgeIndex*>>
-        _indexCache;
 
     //////////////////////////////////////////////////////////////////////////////
     /// @brief Traverser options
@@ -137,34 +127,32 @@ class SingleServerTraverser : public Traverser {
     /// @brief Stack of all active cursors
     //////////////////////////////////////////////////////////////////////////////
 
-    std::stack<std::shared_ptr<OperationCursor>> _cursors;
+    std::stack<std::unique_ptr<OperationCursor>> _cursors;
 
     //////////////////////////////////////////////////////////////////////////////
     /// @brief Stack of all active cursor batches
     //////////////////////////////////////////////////////////////////////////////
 
-    std::stack<std::shared_ptr<OperationResult>> _results;
+    std::stack<std::vector<TRI_doc_mptr_t*>> _results;
 
     //////////////////////////////////////////////////////////////////////////////
     /// @brief Stack of positions in the cursors
     //////////////////////////////////////////////////////////////////////////////
 
-    std::stack<arangodb::velocypack::ValueLength> _posInCursor;
+    std::stack<size_t> _posInCursor;
 
     //////////////////////////////////////////////////////////////////////////////
     /// @brief velocyPack builder to create temporary search values
     //////////////////////////////////////////////////////////////////////////////
 
     arangodb::velocypack::Builder _builder;
-
   };
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief internal cursor to enumerate the paths of a graph
   //////////////////////////////////////////////////////////////////////////////
 
-  std::unique_ptr<arangodb::basics::PathEnumerator<
-      std::string, std::string, arangodb::velocypack::ValueLength>> _enumerator;
+  std::unique_ptr<arangodb::traverser::PathEnumerator> _enumerator;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief internal getter to extract an edge
@@ -183,9 +171,9 @@ class SingleServerTraverser : public Traverser {
   //////////////////////////////////////////////////////////////////////////////
 
 public:
-  SingleServerTraverser(
-      TraverserOptions&, Transaction*,
-      std::unordered_map<size_t, std::vector<TraverserExpression*>> const*);
+ SingleServerTraverser(TraverserOptions&, Transaction*);
+
+ ~SingleServerTraverser();
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief Reset the traverser to use another start vertex
@@ -193,24 +181,90 @@ public:
 
   void setStartVertex(std::string const& v) override;
 
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to load edges for a node
+  //////////////////////////////////////////////////////////////////////////////
+
+  void getEdge(std::string const&, std::vector<std::string>&, size_t*&,
+               size_t&) override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to load all edges for a list of nodes
+  //////////////////////////////////////////////////////////////////////////////
+
+  void getAllEdges(std::string const&, std::unordered_set<std::string>&,
+                   size_t) override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to load the other sides vertex of an edge
+  ///        Returns true if the vertex passes filtering conditions
+  //////////////////////////////////////////////////////////////////////////////
+
+  bool getVertex(std::string const&, std::string const&, size_t,
+                 std::string&) override;
+
   //////////////////////////////////////////////////////////////////////////////
   /// @brief Get the next possible path in the graph.
   //////////////////////////////////////////////////////////////////////////////
 
-  TraversalPath* next() override;
+  bool next() override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Builds only the last vertex as AQLValue
+  //////////////////////////////////////////////////////////////////////////////
+
+  aql::AqlValue lastVertexToAqlValue() override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Builds only the last edge as AQLValue
+  //////////////////////////////////////////////////////////////////////////////
+
+  aql::AqlValue lastEdgeToAqlValue() override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Builds the complete path as AQLValue
+  ///        Has the format:
+  ///        {
+  ///           vertices: [<vertex-as-velocypack>],
+  ///           edges: [<edge-as-velocypack>]
+  ///        }
+  ///        NOTE: Will clear the given buffer and will leave the path in it.
+  //////////////////////////////////////////////////////////////////////////////
+
+  aql::AqlValue pathToAqlValue(arangodb::velocypack::Builder&) override;
+
+ protected:
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to fetch the real data of a vertex into an AQLValue
+  //////////////////////////////////////////////////////////////////////////////
+
+  aql::AqlValue fetchVertexData(std::string const&) override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to fetch the real data of an edge into an AQLValue
+  //////////////////////////////////////////////////////////////////////////////
+
+  aql::AqlValue fetchEdgeData(std::string const&) override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to add the real data of a vertex into a velocypack builder
+  //////////////////////////////////////////////////////////////////////////////
+
+  void addVertexToVelocyPack(std::string const&,
+                             arangodb::velocypack::Builder&) override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to add the real data of an edge into a velocypack builder
+  //////////////////////////////////////////////////////////////////////////////
+
+  void addEdgeToVelocyPack(std::string const&,
+                           arangodb::velocypack::Builder&) override;
 
  private:
   bool edgeMatchesConditions(arangodb::velocypack::Slice, size_t);
 
   bool vertexMatchesConditions(std::string const&, size_t);
-
- //////////////////////////////////////////////////////////////////////////////
-  /// @brief Fetch the vertex data from the transaction
-  //////////////////////////////////////////////////////////////////////////////
-
-  std::shared_ptr<arangodb::velocypack::Buffer<uint8_t>> fetchVertexData(
-      std::string const&);
-
 
   std::vector<TRI_document_collection_t*> _edgeCols;
 
@@ -221,32 +275,21 @@ public:
   Transaction* _trx;
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief Cache for vertex documents
+  /// @brief Cache for vertex documents, points from _id to start of 
+  /// document VPack value (in datafiles)
   //////////////////////////////////////////////////////////////////////////////
 
-  std::unordered_map<std::string,
-                     std::shared_ptr<arangodb::velocypack::Buffer<uint8_t>>>
-      _vertices;
+  std::unordered_map<std::string, uint8_t const*> _vertices;
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief Cache for edge documents
+  /// @brief Cache for edge documents, points from _id to start of edge
+  /// VPack value (in datafiles)
   //////////////////////////////////////////////////////////////////////////////
 
-  std::unordered_map<std::string,
-                     std::shared_ptr<arangodb::velocypack::Buffer<uint8_t>>>
-      _edges;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief Shared builder to create temporary objects like search values
-  //////////////////////////////////////////////////////////////////////////////
-
-  arangodb::velocypack::Builder _builder;
-
-  
+  std::unordered_map<std::string, uint8_t const*> _edges;
 
 };
 } // namespace traverser
 } // namespace arangodb
-
 
 #endif

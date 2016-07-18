@@ -28,6 +28,7 @@
 #include "Basics/conversions.h"
 #include "Basics/Exceptions.h"
 #include "Basics/FileUtils.h"
+#include "Basics/HybridLogicalClock.h"
 #include "Basics/Timers.h"
 #include "Basics/files.h"
 #include "Basics/tri-strings.h"
@@ -793,7 +794,9 @@ static int OpenIteratorHandleDocumentMarker(TRI_df_marker_t const* marker,
   Transaction::extractKeyAndRevFromDocument(slice, keySlice, revisionId);
  
   SetRevision(document, revisionId, false);
-  document->_keyGenerator->track(keySlice.copyString());
+  VPackValueLength length;
+  char const* p = keySlice.getString(length);
+  document->_keyGenerator->track(p, length);
 
   ++state->_documents;
  
@@ -840,8 +843,7 @@ static int OpenIteratorHandleDocumentMarker(TRI_df_marker_t const* marker,
   }
 
   // it is an update, but only if found has a smaller revision identifier
-  else if (found->revisionId() < revisionId ||
-           (found->revisionId() == revisionId && found->getFid() <= fid)) {
+  else {
     // save the old data
     TRI_doc_mptr_t oldData = *found;
 
@@ -870,14 +872,6 @@ static int OpenIteratorHandleDocumentMarker(TRI_df_marker_t const* marker,
     state->_dfi->sizeAlive += DatafileHelper::AlignedMarkerSize<int64_t>(marker);
   }
 
-  // it is a stale update
-  else {
-    TRI_ASSERT(found->vpack() != nullptr);
-
-    state->_dfi->numberDead++;
-    state->_dfi->sizeDead += DatafileHelper::AlignedSize<int64_t>(found->markerSize());
-  }
-
   return TRI_ERROR_NO_ERROR;
 }
 
@@ -899,7 +893,9 @@ static int OpenIteratorHandleDeletionMarker(TRI_df_marker_t const* marker,
   Transaction::extractKeyAndRevFromDocument(slice, keySlice, revisionId);
  
   document->setLastRevision(revisionId, false);
-  document->_keyGenerator->track(keySlice.copyString());
+  VPackValueLength length;
+  char const* p = keySlice.getString(length);
+  document->_keyGenerator->track(p, length);
 
   ++state->_deletions;
 
@@ -1166,7 +1162,7 @@ static int IterateMarkersCollection(arangodb::Transaction* trx,
   TRI_IterateCollection(collection, OpenIterator, &openState);
 
   LOG(TRACE) << "found " << openState._documents << " document markers, " << openState._deletions << " deletion markers for collection '" << collection->_info.name() << "'";
-
+  
   // update the real statistics for the collection
   try {
     for (auto& it : openState._stats) {
@@ -3175,11 +3171,16 @@ arangodb::Index* TRI_EnsureFulltextIndexDocumentCollection(
 
 int TRI_document_collection_t::read(Transaction* trx, std::string const& key,
                                     TRI_doc_mptr_t* mptr, bool lock) {
+  return read(trx, StringRef(key.c_str(), key.size()), mptr, lock);
+}
+
+int TRI_document_collection_t::read(Transaction* trx, StringRef const& key,
+                                    TRI_doc_mptr_t* mptr, bool lock) {
   TRI_ASSERT(mptr != nullptr);
   mptr->setVPack(nullptr);  
 
   TransactionBuilderLeaser builder(trx);
-  builder->add(VPackValue(key));
+  builder->add(VPackValuePair(key.data(), key.size(), VPackValueType::String));
   VPackSlice slice = builder->slice();
 
   {
@@ -3268,7 +3269,7 @@ int TRI_document_collection_t::insert(Transaction* trx, VPackSlice const slice,
     hash = Transaction::extractKeyFromDocument(slice).hashString();
     newSlice = slice;
   }
-
+    
   TRI_ASSERT(mptr != nullptr);
   mptr->setVPack(nullptr);
 
@@ -3356,7 +3357,7 @@ int TRI_document_collection_t::update(Transaction* trx,
   if (!newSlice.isObject()) {
     return TRI_ERROR_ARANGO_DOCUMENT_TYPE_INVALID;
   }
-  
+ 
   // initialize the result
   TRI_ASSERT(mptr != nullptr);
   mptr->setVPack(nullptr);
@@ -3368,11 +3369,14 @@ int TRI_document_collection_t::update(Transaction* trx,
     if (!oldRev.isString()) {
       return TRI_ERROR_ARANGO_DOCUMENT_REV_BAD;
     }
-    VPackValueLength length;
-    char const* p = oldRev.getString(length);
-    revisionId = arangodb::basics::StringUtils::uint64(p, static_cast<size_t>(length));
+    bool isOld;
+    revisionId = TRI_StringToRid(oldRev.copyString(), isOld);
+    if (isOld) {
+      // Do not tolerate old revision IDs
+      revisionId = TRI_HybridLogicalClock();
+    }
   } else {
-    revisionId = TRI_NewTickServer();
+    revisionId = TRI_HybridLogicalClock();
   }
     
   VPackSlice key = newSlice.get(StaticStrings::KeyString);
@@ -3428,7 +3432,7 @@ int TRI_document_collection_t::update(Transaction* trx,
     if (options.recoveryMarker == nullptr) {
       mergeObjectsForUpdate(
         trx, VPackSlice(oldHeader->vpack()), newSlice, isEdgeCollection,
-        std::to_string(revisionId), options.mergeObjects, options.keepNull,
+        TRI_RidToString(revisionId), options.mergeObjects, options.keepNull,
         *builder.get());
  
       if (ServerState::isDBServer(trx->serverRole())) {
@@ -3523,11 +3527,14 @@ int TRI_document_collection_t::replace(Transaction* trx,
     if (!oldRev.isString()) {
       return TRI_ERROR_ARANGO_DOCUMENT_REV_BAD;
     }
-    VPackValueLength length;
-    char const* p = oldRev.getString(length);
-    revisionId = arangodb::basics::StringUtils::uint64(p, static_cast<size_t>(length));
+    bool isOld;
+    revisionId = TRI_StringToRid(oldRev.copyString(), isOld);
+    if (isOld) {
+      // Do not tolerate old revision ticks:
+      revisionId = TRI_HybridLogicalClock();
+    }
   } else {
-    revisionId = TRI_NewTickServer();
+    revisionId = TRI_HybridLogicalClock();
   }
   
   int res;
@@ -3573,7 +3580,8 @@ int TRI_document_collection_t::replace(Transaction* trx,
     TransactionBuilderLeaser builder(trx);
     newObjectForReplace(
         trx, VPackSlice(oldHeader->vpack()),
-        newSlice, fromSlice, toSlice, isEdgeCollection, std::to_string(revisionId), *builder.get());
+        newSlice, fromSlice, toSlice, isEdgeCollection,
+        TRI_RidToString(revisionId), *builder.get());
 
     if (ServerState::isDBServer(trx->serverRole())) {
       // Need to check that no sharding keys have changed:
@@ -3638,19 +3646,22 @@ int TRI_document_collection_t::remove(arangodb::Transaction* trx,
   if (options.isRestore) {
     VPackSlice oldRev = TRI_ExtractRevisionIdAsSlice(slice);
     if (!oldRev.isString()) {
-      revisionId = TRI_NewTickServer();
+      revisionId = TRI_HybridLogicalClock();
     } else {
-      VPackValueLength length;
-      char const* p = oldRev.getString(length);
-      revisionId = arangodb::basics::StringUtils::uint64(p, static_cast<size_t>(length));
+      bool isOld;
+      revisionId = TRI_StringToRid(oldRev.copyString(), isOld);
+      if (isOld) {
+        // Do not tolerate old revisions
+        revisionId = TRI_HybridLogicalClock();
+      }
     }
   } else {
-    revisionId = TRI_NewTickServer();
+    revisionId = TRI_HybridLogicalClock();
   }
   
   TransactionBuilderLeaser builder(trx);
   newObjectForRemove(
-      trx, slice, std::to_string(revisionId), *builder.get());
+      trx, slice, TRI_RidToString(revisionId), *builder.get());
 
   prevRev = VPackSlice();
 
@@ -3817,7 +3828,7 @@ int TRI_document_collection_t::lookupDocument(
     TRI_doc_mptr_t*& header) {
   
   if (!key.isString()) {
-    return TRI_ERROR_INTERNAL;
+    return TRI_ERROR_ARANGO_DOCUMENT_KEY_BAD;
   }
 
   header = primaryIndex()->lookupKey(trx, key);
@@ -4109,13 +4120,13 @@ int TRI_document_collection_t::newObjectForInsert(
   VPackSlice s = value.get(StaticStrings::KeyString);
   if (s.isNone()) {
     TRI_ASSERT(!isRestore);   // need key in case of restore
-    newRev = TRI_NewTickServer();
-    std::string keyString = _keyGenerator->generate(newRev);
+    newRev = TRI_HybridLogicalClock();
+    std::string keyString = _keyGenerator->generate(TRI_NewTickServer());
     if (keyString.empty()) {
       return TRI_ERROR_ARANGO_OUT_OF_KEYS;
     }
     uint8_t* where = builder.add(StaticStrings::KeyString,
-                                  VPackValue(keyString));
+                                 VPackValue(keyString));
     s = VPackSlice(where);  // point to newly built value, the string
   } else if (!s.isString()) {
     return TRI_ERROR_ARANGO_DOCUMENT_KEY_BAD;
@@ -4132,8 +4143,12 @@ int TRI_document_collection_t::newObjectForInsert(
   uint8_t* p = builder.add(StaticStrings::IdString,
       VPackValuePair(9ULL, VPackValueType::Custom));
   *p++ = 0xf3;  // custom type for _id
-  if (ServerState::isDBServer(trx->serverRole())) {
-    // db server in cluster
+  if (ServerState::isDBServer(trx->serverRole()) &&
+      _info.namec_str()[0] != '_') {
+    // db server in cluster, note: the local collections _statistics,
+    // _statisticsRaw and _statistics15 (which are the only system collections)
+    // must not be treated as shards but as local collections, we recognise
+    // this by looking at the first letter of the collection name in _info
     DatafileHelper::StoreNumber<uint64_t>(p, _info.planId(), sizeof(uint64_t));
   } else {
     // local server
@@ -4158,12 +4173,17 @@ int TRI_document_collection_t::newObjectForInsert(
     if (!oldRev.isString()) {
       return TRI_ERROR_ARANGO_DOCUMENT_REV_BAD;
     }
-    newRevSt = oldRev.copyString();
+    bool isOld;
+    TRI_voc_rid_t oldRevision = TRI_StringToRid(oldRev.copyString(), isOld);
+    if (isOld) {
+      oldRevision = TRI_HybridLogicalClock();
+    }
+    newRevSt = TRI_RidToString(oldRevision);
   } else {
     if (newRev == 0) {
-      newRev = TRI_NewTickServer();
+      newRev = TRI_HybridLogicalClock();
     }
-    newRevSt = std::to_string(newRev);
+    newRevSt = TRI_RidToString(newRev);
   }
   builder.add(StaticStrings::RevString, VPackValue(newRevSt));
   
@@ -4262,7 +4282,7 @@ void TRI_document_collection_t::mergeObjectsForUpdate(
           fromSlice = it.value();
         } else if (key == StaticStrings::ToString) {
           toSlice = it.value();
-        }
+        } // else do nothing
       } else {
         // regular attribute
         newValues.emplace(std::move(key), it.value());

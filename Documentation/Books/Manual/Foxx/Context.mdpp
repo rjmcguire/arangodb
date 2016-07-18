@@ -1,16 +1,49 @@
 !CHAPTER Foxx service context
 
-TODO
+The service context provides access to methods and attributes that are specific to a given service. In a Foxx service the context is generally available as the `module.context` variable. Within a router's request handler the request and response objects' `context` attribute also provide access to the context of the service the route was mounted in (which may be different from the one the route handler was defined in).
+
+**Examples**
+
+```js
+// in service /my-foxx-1
+const createRouter = require('@arangodb/foxx/router');
+const router = createRouter();
+
+// See the chapter on dependencies for more info on
+// how exports and dependencies work across services
+module.exports = {routes: router};
+
+router.get(function (req, res) {
+  module.context.mount === '/my-foxx-1';
+  req.context.mount === '/my-foxx-2';
+  res.write('Hello from my-foxx-1');
+});
+
+// in service /my-foxx-2
+const createRouter = require('@arangodb/foxx/router');
+const router2 = createRouter();
+
+module.context.use(router2);
+
+router2.post(function (req, res) {
+  module.context.mount === '/my-foxx-2';
+  req.context.mount === '/my-foxx-2';
+  res.write('Hello from my-foxx-2');
+});
+
+const router1 = module.context.dependencies.myFoxx1.routes;
+module.context.use(router1);
+```
 
 The service context specifies the following properties:
 
 * **argv**: `any`
 
-  Any arguments passed in if the current file was executed as a script or queued job. For more information see the [chapter on scripts and queued jobs][SCRIPTS].
+  Any arguments passed in if the current file was executed as a [script or queued job](Scripts.md).
 
 * **basePath**: `string`
 
-  The file system path of the service, i.e. the folder in which the service was installed by ArangoDB.
+  The file system path of the service, i.e. the folder in which the service was installed to by ArangoDB.
 
 * **baseUrl**: `string`
 
@@ -22,15 +55,15 @@ The service context specifies the following properties:
 
 * **configuration**: `Object`
 
-  TODO
+  [Configuration options](Configuration.md) for the service.
 
 * **dependencies**: `Object`
 
-  TODO
+  Configured [dependencies](Dependencies.md) for the service.
 
 * **isDevelopment**: `boolean`
 
-  TODO
+  Indicates whether the service is running in [development mode](AtAGlance.md).
 
 * **isProduction**: `boolean`
 
@@ -38,7 +71,7 @@ The service context specifies the following properties:
 
 * **manifest**: `Object`
 
-  TODO
+  The parsed [manifest file](Manifest.md) of the service.
 
 * **mount**: `string`
 
@@ -48,15 +81,67 @@ The service context specifies the following properties:
 
 `module.context.apiDocumentation([options]): Function`
 
-TODO
+Creates a route handler that serves the API documentation.
+
+**Note**: The route handler must be mounted at a wildcard route (see examples below).
 
 **Arguments**
 
 * **options**: `Object` (optional)
 
-  TODO
+  An object with any of the following properties:
 
-TODO
+  * **mount**: `string` (Default: `module.context.mount`)
+
+    The mount path of the service to serve the documentation of.
+
+  * **indexFile**: `string` (Default: `"index.html"`)
+
+    File name of the HTML file serving the API documentation.
+
+  * **swaggerRoot**: `string` (optional)
+
+    Full path of the folder containing the Swagger assets and the *indexFile*.
+    Defaults to the Swagger assets used by the web interface.
+
+  * **before**: `Function` (optional)
+
+    Request handler to be executed before a request is handled.
+
+    If the function returns `false` the request will not be processed any further.
+
+    If the function returns an object, its attributes will be used to override the *options* for the current request.
+
+    Any other return value will be ignored.
+
+If *options* is a function it will be used as the *before* option.
+
+If *options* is a string it will be used as the *swaggerRoot* option.
+
+Returns a request handler function.
+
+**Examples**
+
+```js
+// Serve the API docs for the current service
+router.get('/docs/*', module.context.apiDocumentation());
+
+// -- or --
+
+// Serve the API docs for the service the router is mounted in
+router.get('/docs/*', module.context.apiDocumentation(function (req) {
+  return {mount: req.context.mount};
+}));
+
+// -- or --
+
+// Serve the API docs only for users authenticated with ArangoDB
+router.get('/docs/*', module.context.apiDocumentation(function (req, res) {
+  if (req.suffix === 'swagger.json' && !req.arangoUser) {
+    res.throw(401, 'Not authenticated');
+  }
+}));
+```
 
 !SECTION collection
 
@@ -125,7 +210,7 @@ Resolves the given file name relative to the current service.
 
 Returns the absolute file path.
 
-!SECTION registerType
+<!-- SECTION registerType
 
 `module.context.registerType(type, def): void`
 
@@ -143,6 +228,8 @@ TODO
 
 TODO
 
+-->
+
 !SECTION use
 
 `module.context.use([path], router): Endpoint`
@@ -159,9 +246,6 @@ Mounts a given router on the service to expose the router's routes on the servic
 
   A router or middleware to mount.
 
-Returns the [Endpoint][ENDPOINTS] for the given router or middleware.
+Returns an [Endpoint](Router/Endpoints.md) for the given router or middleware.
 
 **Note**: Mounting services at run time (e.g. within request handlers or queued jobs) is not supported.
-
-[SCRIPTS]: ./Scripts.md
-[ENDPOINTS]: ./Router/Endpoints.md

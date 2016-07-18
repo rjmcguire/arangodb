@@ -258,6 +258,8 @@ struct FunctionDefiner {
               false, true, true, &Functions::UnionDistinct});
     add({"MINUS", "AQL_MINUS", "l,l|+", true, true, false, true,
                        true, &Functions::Minus});
+    add({"OUTERSECTION", "AQL_OUTERSECTION", "l,l|+", true, true, false,
+              true, true, &Functions::Outersection});
     add({"INTERSECTION", "AQL_INTERSECTION", "l,l|+", true, true, false,
               true, true, &Functions::Intersection});
     add({"FLATTEN", "AQL_FLATTEN", "l|n", true, true, false,
@@ -438,7 +440,7 @@ struct FunctionDefiner {
               true, true, &Functions::FirstDocument});
     add({"PARSE_IDENTIFIER", "AQL_PARSE_IDENTIFIER", ".", true, true,
               false, true, true, &Functions::ParseIdentifier});
-    add({"IS_SAME_COLLECTION", "AQL_IS_SAME_COLLECTION", "ch,as", true, true,
+    add({"IS_SAME_COLLECTION", "AQL_IS_SAME_COLLECTION", "chas,chas", true, true,
                false, true, true, &Functions::IsSameCollection});
     add({"CURRENT_USER", "AQL_CURRENT_USER", "", false,
                               false, false, false, true});

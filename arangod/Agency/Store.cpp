@@ -26,6 +26,8 @@
 #include "StoreCallback.h"
 #include "Agency/Agent.h"
 #include "Basics/ConditionLocker.h"
+#include "Basics/ReadLocker.h"
+#include "Basics/WriteLocker.h"
 #include "Basics/StringUtils.h"
 #include "Basics/VelocyPackHelper.h"
 
@@ -36,47 +38,55 @@
 
 #include <ctime>
 #include <iomanip>
+#include <regex>
 
 using namespace arangodb::consensus;
 using namespace arangodb::basics;
 
+
+/// Non-Emptyness of string
 struct NotEmpty {
   bool operator()(const std::string& s) { return !s.empty(); }
 };
 
+
+/// Emptyness of string
 struct Empty {
   bool operator()(const std::string& s) { return s.empty(); }
 };
 
+
 /// @brief Split strings by separator
 inline std::vector<std::string> split(const std::string& value,
                                       char separator) {
-  std::vector<std::string> result;
-  std::string::size_type p = (value.find(separator) == 0) ? 1 : 0;
-  std::string::size_type q;
+  std::vector<std::string> res;
+  std::string::size_type q, p = (value.find(separator) == 0) ? 1 : 0;
+
   while ((q = value.find(separator, p)) != std::string::npos) {
-    result.emplace_back(value, p, q - p);
+    res.emplace_back(value, p, q - p);
     p = q + 1;
   }
-  result.emplace_back(value, p);
-  result.erase(std::find_if(result.rbegin(), result.rend(), NotEmpty()).base(),
-               result.end());
-  return result;
+  res.emplace_back(value, p);
+  res.erase(
+    std::find_if(res.rbegin(), res.rend(), NotEmpty()).base(), res.end());
+  
+  return res;
+  
 }
 
 
-// Build endpoint from URL
-inline static bool endpointPathFromUrl(std::string const& url,
-                                       std::string& endpoint,
-                                       std::string& path) {
+/// Build endpoint from URL
+inline static bool endpointPathFromUrl(
+  std::string const& url, std::string& endpoint, std::string& path) {
+  
   std::stringstream ep;
   path = "/";
   size_t pos = 7;
-  if (url.find("http://") == 0) {
+
+  if (url.compare(0, pos, "http://") == 0) {
     ep << "tcp://";
-  } else if (url.find("https://") == 0) {
+  } else if (url.compare(0, ++pos, "https://") == 0) {
     ep << "ssl://";
-    ++pos;
   } else {
     return false;
   }
@@ -96,21 +106,23 @@ inline static bool endpointPathFromUrl(std::string const& url,
   endpoint = ep.str();
 
   return true;
+  
 }
 
 
-// Create with name
-Store::Store(std::string const& name) : Thread(name), _node(name, this) {}
+/// Ctor with name
+Store::Store(Agent* agent, std::string const& name)
+    : Thread(name), _agent(agent), _node(name, this) {}
 
 
-// Copy constructor
+/// Copy ctor
 Store::Store(Store const& other) :
   Thread(other._node.name()), _agent(other._agent), _timeTable(other._timeTable),
   _observerTable(other._observerTable), _observedTable(other._observedTable),
   _node(other._node) {}
 
 
-// Move constructor
+/// Move constructor
 Store::Store(Store&& other) :
   Thread(other._node.name()), _agent(std::move(other._agent)),
   _timeTable(std::move(other._timeTable)),
@@ -118,7 +130,8 @@ Store::Store(Store&& other) :
   _observedTable(std::move(other._observedTable)),
   _node(std::move(other._node)) {}
 
-// Copy assignment operator
+
+/// Copy assignment operator
 Store& Store::operator=(Store const& rhs) {
   _agent = rhs._agent;
   _timeTable = rhs._timeTable;
@@ -128,7 +141,8 @@ Store& Store::operator=(Store const& rhs) {
   return *this;
 }
 
-// Move assignment operator
+
+/// Move assignment operator
 Store& Store::operator=(Store&& rhs) {
   _agent = std::move(rhs._agent);
   _timeTable = std::move(rhs._timeTable);
@@ -138,60 +152,78 @@ Store& Store::operator=(Store&& rhs) {
   return *this;
 }
 
-// Default dtor
+
+/// Default dtor
 Store::~Store() {
   shutdown();
 }
 
-// Apply queries multiple queries to store
-std::vector<bool> Store::apply(query_t const& query) {
-  std::vector<bool> applied;
+
+/// Apply array of queries multiple queries to store
+/// Return vector of according success 
+std::vector<bool> Store::apply(query_t const& query, bool verbose) {
+
+  std::vector<bool> success;
   MUTEX_LOCKER(storeLocker, _storeLock);
-  /*for (auto const& i : VPackArrayIterator(query->slice())) {
-    LOG(WARN) << i[0].typeName();
-    LOG(WARN) << i[0].keyAt(0).copyString();
-    } */ 
-  for (auto const& i : VPackArrayIterator(query->slice())) {
-    switch (i.length()) {
-      case 1:
-        applied.push_back(applies(i[0]));
-        break;  // no precond
-      case 2:
-        if (check(i[1])) {  // precondition
-          applied.push_back(applies(i[0]));
+
+  try {
+
+    for (auto const& i : VPackArrayIterator(query->slice())) {
+      
+      switch (i.length()) {
+      case 1:  // No precondition
+        success.push_back(applies(i[0]));
+        break;  
+      case 2:  // precondition
+        if (check(i[1])) {                
+          success.push_back(applies(i[0]));
         } else {  // precondition failed
           LOG_TOPIC(TRACE, Logger::AGENCY) << "Precondition failed!";
-          applied.push_back(false);
+          success.push_back(false);
         }
         break;
-      default:  // wrong
+      default: // Wrong 
         LOG_TOPIC(ERR, Logger::AGENCY)
-            << "We can only handle log entry with or without precondition!";
-        applied.push_back(false);
+          << "We can only handle log entry with or without precondition!";
+        success.push_back(false);
         break;
+      }
+      
     }
+
+    //Wake up TTL processing
+    _cv.signal();
+    
+  } catch (std::exception const& e) { // Catch any erorrs
+    LOG_TOPIC(ERR, Logger::AGENCY)
+      << __FILE__ << ":" << __LINE__ << " " << e.what();
   }
 
-  _cv.signal();
-
-  return applied;
+  return success;
+  
 }
 
-// Get name
+
+/// Get name
 std::string const& Store::name() const {
   return _node.name();
 }
 
-// template<class T, class U> std::multimap<std::string, std::string>
-std::ostream& operator<<(std::ostream& os,
-                         std::multimap<std::string, std::string> const& m) {
+
+/// template<class T, class U> std::multimap<std::string, std::string>
+std::ostream& operator<<(
+  std::ostream& os, std::multimap<std::string, std::string> const& m) {
+
   for (auto const& i : m) {
     os << i.first << ": " << i.second << std::endl;
   }
+  
   return os;
+  
 }
 
-// Apply external
+
+/// Notification type
 struct notify_t {
   std::string key;
   std::string modified;
@@ -201,7 +233,7 @@ struct notify_t {
 };
 
 
-// Apply (from logs)
+/// Apply (from logs)
 std::vector<bool> Store::apply(
   std::vector<VPackSlice> const& queries, bool inform) {
   
@@ -252,8 +284,8 @@ std::vector<bool> Store::apply(
   for (auto const& url : urls) {
     Builder body;  // host
     body.openObject();
-    body.add("term", VPackValue(0));
-    body.add("index", VPackValue(0));
+    body.add("term", VPackValue(_agent->term()));
+    body.add("index", VPackValue(_agent->lastCommited()));
     auto ret = in.equal_range(url);
 
     for (auto it = ret.first; it != ret.second; ++it) {
@@ -285,7 +317,7 @@ std::vector<bool> Store::apply(
 }
 
 
-// Check single precondition
+/// Check precodition object
 bool Store::check(VPackSlice const& slice) const {
 
   if (!slice.isObject()) {  // Must be object
@@ -329,6 +361,22 @@ bool Store::check(VPackSlice const& slice) const {
           if (op.value.getBool() ? found : !found) {
             return false;
           }
+        } else if (oper == "in") {  // in
+          if (found) {
+            if (node.slice().isArray()) {
+              bool found = false;
+              for (auto const& i : VPackArrayIterator(node.slice())) {
+                if (i == op.value) {
+                  found = true;
+                  continue;
+                }
+              }
+              if (found) {
+                continue;
+              }
+            }
+          }
+          return false;
         }
       }
     } else {
@@ -342,7 +390,7 @@ bool Store::check(VPackSlice const& slice) const {
 }
 
 
-// Read queries into result
+/// Read queries into result
 std::vector<bool> Store::read(query_t const& queries, query_t& result) const {
   std::vector<bool> success;
   MUTEX_LOCKER(storeLocker, _storeLock);
@@ -359,7 +407,7 @@ std::vector<bool> Store::read(query_t const& queries, query_t& result) const {
 }
 
 
-// Read single query into ret
+/// Read single query into ret
 bool Store::read(VPackSlice const& query, Builder& ret) const {
   bool success = true;
 
@@ -408,14 +456,16 @@ bool Store::read(VPackSlice const& query, Builder& ret) const {
   return success;
 }
 
-// Shutdown
+
+/// Shutdown
 void Store::beginShutdown() {
   Thread::beginShutdown();
   CONDITION_LOCKER(guard, _cv);
   guard.broadcast();
 }
 
-// TTL clear values from store
+
+/// TTL clear values from store
 query_t Store::clearExpired() const {
   query_t tmp = std::make_shared<Builder>();
   tmp->openArray();
@@ -439,7 +489,8 @@ query_t Store::clearExpired() const {
   return tmp;
 }
 
-// Dump internal data to builder
+
+/// Dump internal data to builder
 void Store::dumpToBuilder(Builder& builder) const {
   MUTEX_LOCKER(storeLocker, _storeLock);
   toBuilder(builder);
@@ -468,21 +519,14 @@ void Store::dumpToBuilder(Builder& builder) const {
 }
 
 
-// Start thread
+/// Start thread
 bool Store::start() {
   Thread::start();
   return true;
 }
 
 
-// Start thread with agent
-bool Store::start(Agent* agent) {
-  _agent = agent;
-  return start();
-}
-
-
-// Work ttls and callbacks
+/// Work ttls and callbacks
 void Store::run() {
   CONDITION_LOCKER(guard, _cv);
   while (!this->isStopping()) {  // Check timetable and remove overage entries
@@ -511,15 +555,48 @@ void Store::run() {
 }
 
 
-// Apply a request to my key value tree
-bool Store::applies(arangodb::velocypack::Slice const& slice) {
-  return _node.applies(slice);
+/// Apply transaction to key value store
+bool Store::applies(arangodb::velocypack::Slice const& transaction) {
+
+  std::vector<std::string> keys;
+  std::vector<std::string> abskeys;
+  std::vector<size_t> idx;
+  std::regex reg("/+");
+  size_t counter = 0;
+
+  for (const auto& atom : VPackObjectIterator(transaction)) {
+    std::string key(atom.key.copyString());
+    keys.push_back(key);
+    key = std::regex_replace(key, reg, "/");
+    abskeys.push_back(((key[0]=='/') ? key : std::string("/")+key));
+    idx.push_back(counter++);
+  }
+
+  sort(idx.begin(), idx.end(),
+       [&abskeys](size_t i1, size_t i2) {return abskeys[i1] < abskeys[i2];});
+  
+  for (const auto& i : idx) {
+
+    std::string const& key = keys.at(i);
+    Slice value = transaction.get(key);
+    
+    if (value.isObject() && value.hasKey("op")) {
+      _node(abskeys.at(i)).applieOp(value);
+    } else {
+      _node(abskeys.at(i)).applies(value);
+    }
+    
+  }
+
+  return true;
+  
 }
 
 
-// Apply a request to my key value store
+/// Apply a request to my key value store
 Store& Store::operator=(VPackSlice const& slice) {
   TRI_ASSERT(slice.isArray());
+  TRI_ASSERT(slice.length()==4);
 
   MUTEX_LOCKER(storeLocker, _storeLock);
   _node.applies(slice[0]);
@@ -548,46 +625,63 @@ Store& Store::operator=(VPackSlice const& slice) {
   return *this;
 }
 
+
+/// Put key value store in velocypack
 void Store::toBuilder(Builder& b) const { _node.toBuilder(b); }
 
-Node Store::operator()(std::vector<std::string> const& pv) { return _node(pv); }
 
+/// Get kv-store at path vector
+Node Store::operator()(std::vector<std::string> const& pv) { return _node(pv); }
+/// Get kv-store at path vector
 Node const Store::operator()(std::vector<std::string> const& pv) const {
   return _node(pv);
 }
 
-Node Store::operator()(std::string const& path) { return _node(path); }
 
+/// Get kv-store at path vector
+Node Store::operator()(std::string const& path) { return _node(path); }
+/// Get kv-store at path vector
 Node const Store::operator()(std::string const& path) const {
   return _node(path);
 }
 
-std::multimap<TimePoint, std::string>& Store::timeTable() { return _timeTable; }
 
+/// Time table
+std::multimap<TimePoint, std::string>& Store::timeTable() { return _timeTable; }
+/// Time table
 const std::multimap<TimePoint, std::string>& Store::timeTable() const {
   return _timeTable;
 }
 
+
+/// Observer table
 std::multimap<std::string, std::string>& Store::observerTable() {
   return _observerTable;
 }
+/// Observer table
 std::multimap<std::string, std::string> const& Store::observerTable() const {
   return _observerTable;
 }
 
+
+/// Observed table
 std::multimap<std::string, std::string>& Store::observedTable() {
   return _observedTable;
 }
-
+/// Observed table
 std::multimap<std::string, std::string> const& Store::observedTable() const {
   return _observedTable;
 }
 
+
+/// Get node at path under mutex
 Node const Store::get(std::string const& path) const {
   MUTEX_LOCKER(storeLocker, _storeLock);
   return _node(path);
 }
 
+
+/// Remove ttl entry for path
 void Store::removeTTL(std::string const& uri) {
   if (!_timeTable.empty()) {
     for (auto it = _timeTable.cbegin(); it != _timeTable.cend();) {
@@ -600,6 +694,8 @@ void Store::removeTTL(std::string const& uri) {
   }
 }
 
+
+/// Absolute path exists in key value store?
 std::vector<std::string> Store::exists(std::string const& abs) const {
   return _node.exists(abs);
 }
