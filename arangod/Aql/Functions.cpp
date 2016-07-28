@@ -586,19 +586,25 @@ static void GetDocumentByIdentifier(arangodb::AqlTransaction* trx,
       searchBuilder->add(VPackValue(identifier.substr(pos + 1)));
     }
   }
-
+  
   int res = TRI_ERROR_NO_ERROR;
   try {
     res = trx->documentFastPath(collectionName, searchBuilder->slice(), result);
-  } catch (arangodb::basics::Exception const&) {
-    if (ignoreError) {
-      return;
-    }
-    throw;
+  } catch (arangodb::basics::Exception const& ex) {
+    res = ex.code();
   }
+
   if (res != TRI_ERROR_NO_ERROR) {
     if (ignoreError) {
-      return;
+      if (res == TRI_ERROR_ARANGO_DOCUMENT_NOT_FOUND || 
+          res == TRI_ERROR_ARANGO_COLLECTION_NOT_FOUND ||
+          res == TRI_ERROR_ARANGO_CROSS_COLLECTION_REQUEST) {
+        return;
+      }
+    }
+    if (res == TRI_ERROR_TRANSACTION_UNREGISTERED_COLLECTION) {
+      // special error message to indicate which collection was undeclared
+      THROW_ARANGO_EXCEPTION_MESSAGE(res, std::string(TRI_errno_string(res)) + ": " + collectionName + " [" + TRI_TransactionTypeGetStr(TRI_TRANSACTION_READ) + "]");
     }
     THROW_ARANGO_EXCEPTION(res);
   }
@@ -2073,8 +2079,11 @@ AqlValue Functions::Intersection(arangodb::aql::Query* query,
         auto found = values.find(it);
         if (found != values.end()) {
           // already seen
-          TRI_ASSERT((*found).second > 0);
-          ++(found->second);
+          if ((*found).second < i) {
+            (*found).second = 0;
+          } else {
+            (*found).second = i + 1;
+          }
         }
       }
     }

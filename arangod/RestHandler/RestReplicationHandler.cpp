@@ -29,7 +29,7 @@
 #include "Basics/files.h"
 #include "Cluster/ClusterComm.h"
 #include "Cluster/ClusterMethods.h"
-#include "HttpServer/HttpServer.h"
+#include "GeneralServer/GeneralServer.h"
 #include "Indexes/EdgeIndex.h"
 #include "Indexes/Index.h"
 #include "Indexes/PrimaryIndex.h"
@@ -557,7 +557,7 @@ void RestReplicationHandler::handleCommandBatch() {
   if (type == GeneralRequest::RequestType::POST) {
     // create a new blocker
     std::shared_ptr<VPackBuilder> input =
-        _request->toVelocyPack(&VPackOptions::Defaults);
+        _request->toVelocyPackBuilderPtr(&VPackOptions::Defaults);
 
     if (input == nullptr || !input->slice().isObject()) {
       generateError(GeneralResponse::ResponseCode::BAD,
@@ -595,8 +595,7 @@ void RestReplicationHandler::handleCommandBatch() {
     TRI_voc_tick_t id =
         static_cast<TRI_voc_tick_t>(StringUtils::uint64(suffix[1]));
 
-    std::shared_ptr<VPackBuilder> input =
-        _request->toVelocyPack(&VPackOptions::Defaults);
+    auto input = _request->toVelocyPackBuilderPtr(&VPackOptions::Defaults);
 
     if (input == nullptr || !input->slice().isObject()) {
       generateError(GeneralResponse::ResponseCode::BAD,
@@ -655,7 +654,7 @@ void RestReplicationHandler::handleCommandBarrier() {
     // create a new barrier
 
     std::shared_ptr<VPackBuilder> input =
-        _request->toVelocyPack(&VPackOptions::Defaults);
+        _request->toVelocyPackBuilderPtr(&VPackOptions::Defaults);
 
     if (input == nullptr || !input->slice().isObject()) {
       generateError(GeneralResponse::ResponseCode::BAD,
@@ -705,7 +704,7 @@ void RestReplicationHandler::handleCommandBarrier() {
     TRI_voc_tick_t id = StringUtils::uint64(suffix[1]);
 
     std::shared_ptr<VPackBuilder> input =
-        _request->toVelocyPack(&VPackOptions::Defaults);
+        _request->toVelocyPackBuilderPtr(&VPackOptions::Defaults);
 
     if (input == nullptr || !input->slice().isObject()) {
       generateError(GeneralResponse::ResponseCode::BAD,
@@ -778,7 +777,6 @@ void RestReplicationHandler::handleCommandBarrier() {
 ////////////////////////////////////////////////////////////////////////////////
 
 void RestReplicationHandler::handleTrampolineCoordinator() {
-
   if (_request == nullptr) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_INTERNAL);
   }
@@ -814,12 +812,17 @@ void RestReplicationHandler::handleTrampolineCoordinator() {
   // Set a few variables needed for our work:
   ClusterComm* cc = ClusterComm::instance();
 
+  HttpRequest* httpRequest = dynamic_cast<HttpRequest*>(_request);
+  if (httpRequest == nullptr) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_INTERNAL);
+  }
+
   // Send a synchronous request to that shard using ClusterComm:
   auto res = cc->syncRequest("", TRI_NewTickServer(), "server:" + DBserver,
                              _request->requestType(),
                              "/_db/" + StringUtils::urlEncode(dbname) +
                                  _request->requestPath() + params,
-                             _request->body(), *headers, 300.0);
+                             httpRequest->body(), *headers, 300.0);
 
   if (res->status == CL_COMM_TIMEOUT) {
     // No reply, we give up:
@@ -922,7 +925,7 @@ void RestReplicationHandler::handleCommandLoggerFollow() {
     options.checkAttributeUniqueness = true;
     std::shared_ptr<VPackBuilder> parsedRequest;
     try {
-      parsedRequest = _request->toVelocyPack(&options);
+      parsedRequest = _request->toVelocyPackBuilderPtr(&options);
     } catch (...) {
       generateError(GeneralResponse::ResponseCode::BAD,
                     TRI_ERROR_HTTP_BAD_PARAMETER,
@@ -1214,7 +1217,7 @@ void RestReplicationHandler::handleCommandClusterInventory() {
                   TRI_ERROR_CLUSTER_READING_PLAN_AGENCY);
   } else {
     VPackSlice colls = result.slice()[0].get(std::vector<std::string>(
-      {_agency.prefix(), "Plan", "Collections", dbName}));
+        {_agency.prefix(), "Plan", "Collections", dbName}));
     if (!colls.isObject()) {
       generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
                     TRI_ERROR_CLUSTER_READING_PLAN_AGENCY);
@@ -1230,7 +1233,7 @@ void RestReplicationHandler::handleCommandClusterInventory() {
             if (subResultSlice.isObject()) {
               if (includeSystem ||
                   !arangodb::basics::VelocyPackHelper::getBooleanValue(
-                    subResultSlice, "isSystem", true)) {
+                      subResultSlice, "isSystem", true)) {
                 VPackObjectBuilder b3(&resultBuilder);
                 resultBuilder.add("indexes", subResultSlice.get("indexes"));
                 resultBuilder.add("parameters", subResultSlice);
@@ -1243,11 +1246,9 @@ void RestReplicationHandler::handleCommandClusterInventory() {
         resultBuilder.add("tick", VPackValue(tickString));
         resultBuilder.add("state", VPackValue("unused"));
       }
-      generateResult(GeneralResponse::ResponseCode::OK,
-                     resultBuilder.slice());
+      generateResult(GeneralResponse::ResponseCode::OK, resultBuilder.slice());
     }
   }
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1370,7 +1371,7 @@ void RestReplicationHandler::handleCommandRestoreCollection() {
   options.checkAttributeUniqueness = true;
 
   try {
-    parsedRequest = _request->toVelocyPack(&options);
+    parsedRequest = _request->toVelocyPackBuilderPtr(&options);
   } catch (...) {
     generateError(GeneralResponse::ResponseCode::BAD,
                   TRI_ERROR_HTTP_BAD_PARAMETER, "invalid JSON");
@@ -1454,7 +1455,7 @@ void RestReplicationHandler::handleCommandRestoreIndexes() {
   options.checkAttributeUniqueness = true;
 
   try {
-    parsedRequest = _request->toVelocyPack(&options);
+    parsedRequest = _request->toVelocyPackBuilderPtr(&options);
   } catch (...) {
     generateError(GeneralResponse::ResponseCode::BAD,
                   TRI_ERROR_HTTP_BAD_PARAMETER, "invalid JSON");
@@ -1624,7 +1625,8 @@ int RestReplicationHandler::processRestoreCollection(
 
 int RestReplicationHandler::processRestoreCollectionCoordinator(
     VPackSlice const& collection, bool dropExisting, bool reuseId, bool force,
-    uint64_t numberOfShards, std::string& errorMsg, uint64_t replicationFactor) {
+    uint64_t numberOfShards, std::string& errorMsg,
+    uint64_t replicationFactor) {
   if (!collection.isObject()) {
     errorMsg = "collection declaration is invalid";
 
@@ -1714,8 +1716,8 @@ int RestReplicationHandler::processRestoreCollectionCoordinator(
 
   VPackSlice const replFactorSlice = parameters.get("replicationFactor");
   if (replFactorSlice.isInteger()) {
-    replicationFactor = replFactorSlice.getNumericValue
-                            <decltype(replicationFactor)>();
+    replicationFactor =
+        replFactorSlice.getNumericValue<decltype(replicationFactor)>();
   }
   if (replicationFactor == 0) {
     replicationFactor = 1;
@@ -1739,9 +1741,9 @@ int RestReplicationHandler::processRestoreCollectionCoordinator(
 
     // shards
     std::vector<std::string> dbServers;  // will be filled
-    std::map<std::string, std::vector<std::string>> shardDistribution
-        = arangodb::distributeShards(numberOfShards, replicationFactor,
-                                     dbServers);
+    std::map<std::string, std::vector<std::string>> shardDistribution =
+        arangodb::distributeShards(numberOfShards, replicationFactor,
+                                   dbServers);
     if (shardDistribution.empty()) {
       errorMsg = "no database servers found in cluster";
       return TRI_ERROR_INTERNAL;
@@ -1989,7 +1991,8 @@ int RestReplicationHandler::processRestoreIndexesCoordinator(
   int res = TRI_ERROR_NO_ERROR;
   for (VPackSlice const& idxDef : VPackArrayIterator(indexes)) {
     VPackSlice type = idxDef.get("type");
-    if (type.isString() && (type.copyString() == "primary" || type.copyString() == "edge")) {
+    if (type.isString() &&
+        (type.copyString() == "primary" || type.copyString() == "edge")) {
       // must ignore these types of indexes during restore
       continue;
     }
@@ -2175,12 +2178,12 @@ int RestReplicationHandler::processRestoreDataBatch(
 
   VPackBuilder builder;
 
-
-  if (_request == nullptr) {
+  HttpRequest* httpRequest = dynamic_cast<HttpRequest*>(_request);
+  if (httpRequest == nullptr) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_INTERNAL);
   }
 
-  std::string const& bodyStr = _request->body();
+  std::string const& bodyStr = httpRequest->body();
   char const* ptr = bodyStr.c_str();
   char const* end = ptr + bodyStr.size();
 
@@ -2269,8 +2272,8 @@ int RestReplicationHandler::processRestoreDataBatch(
     options.ignoreRevs = true;
     options.isRestore = true;
     options.waitForSync = false;
-    OperationResult opRes = trx.remove(collectionName, oldBuilder.slice(),
-                                       options);
+    OperationResult opRes =
+        trx.remove(collectionName, oldBuilder.slice(), options);
     if (!opRes.successful()) {
       return opRes.code;
     }
@@ -2519,7 +2522,12 @@ void RestReplicationHandler::handleCommandRestoreDataCoordinator() {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_INTERNAL);
   }
 
-  std::string const& bodyStr = _request->body();
+  HttpRequest* httpRequest = dynamic_cast<HttpRequest*>(_request);
+  if (httpRequest == nullptr) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_INTERNAL);
+  }
+
+  std::string const& bodyStr = httpRequest->body();
   char const* ptr = bodyStr.c_str();
   char const* end = ptr + bodyStr.size();
 
@@ -2634,16 +2642,16 @@ void RestReplicationHandler::handleCommandRestoreDataCoordinator() {
           // copy default options
           VPackOptions options = VPackOptions::Defaults;
           options.checkAttributeUniqueness = true;
-          std::shared_ptr<VPackBuilder> parsedAnswer;
+
+          VPackSlice answer;
           try {
-            parsedAnswer = result.answer->toVelocyPack(&options);
+            answer = result.answer->payload(&options);
           } catch (VPackException const& e) {
             // Only log this error and try the next doc
             LOG(DEBUG) << "failed to parse json object: '" << e.what() << "'";
             continue;
           }
 
-          VPackSlice const answer = parsedAnswer->slice();
           if (answer.isObject()) {
             VPackSlice const result = answer.get("result");
             if (result.isBoolean()) {
@@ -2667,16 +2675,15 @@ void RestReplicationHandler::handleCommandRestoreDataCoordinator() {
           // copy default options
           VPackOptions options = VPackOptions::Defaults;
           options.checkAttributeUniqueness = true;
-          std::shared_ptr<VPackBuilder> parsedAnswer;
+          VPackSlice answer;
           try {
-            parsedAnswer = result.answer->toVelocyPack(&options);
+            answer = result.answer->payload(&options);
           } catch (VPackException const& e) {
             // Only log this error and try the next doc
             LOG(DEBUG) << "failed to parse json object: '" << e.what() << "'";
             continue;
           }
 
-          VPackSlice const answer = parsedAnswer->slice();
           if (answer.isObject()) {
             VPackSlice const errorMessage = answer.get("errorMessage");
             if (errorMessage.isString()) {
@@ -3937,9 +3944,10 @@ void RestReplicationHandler::handleCommandHoldReadLockCollection() {
   }
   VPackSlice const body = parsedBody->slice();
   if (!body.isObject()) {
-    generateError(
-        GeneralResponse::ResponseCode::BAD, TRI_ERROR_HTTP_BAD_PARAMETER,
-        "body needs to be an object with attributes 'collection', 'ttl' and 'id'");
+    generateError(GeneralResponse::ResponseCode::BAD,
+                  TRI_ERROR_HTTP_BAD_PARAMETER,
+                  "body needs to be an object with attributes 'collection', "
+                  "'ttl' and 'id'");
     return;
   }
   VPackSlice const collection = body.get("collection");
@@ -3954,7 +3962,8 @@ void RestReplicationHandler::handleCommandHoldReadLockCollection() {
   }
   std::string id = idSlice.copyString();
 
-  auto col = TRI_LookupCollectionByNameVocBase(_vocbase, collection.copyString());
+  auto col =
+      TRI_LookupCollectionByNameVocBase(_vocbase, collection.copyString());
   if (col == nullptr) {
     generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
                   TRI_ERROR_ARANGO_COLLECTION_NOT_FOUND,
@@ -4042,16 +4051,15 @@ void RestReplicationHandler::handleCommandCheckHoldReadLockCollection() {
   }
   VPackSlice const body = parsedBody->slice();
   if (!body.isObject()) {
-    generateError(
-        GeneralResponse::ResponseCode::BAD, TRI_ERROR_HTTP_BAD_PARAMETER,
-        "body needs to be an object with attribute 'id'");
+    generateError(GeneralResponse::ResponseCode::BAD,
+                  TRI_ERROR_HTTP_BAD_PARAMETER,
+                  "body needs to be an object with attribute 'id'");
     return;
   }
   VPackSlice const idSlice = body.get("id");
   if (!idSlice.isString()) {
     generateError(GeneralResponse::ResponseCode::BAD,
-                  TRI_ERROR_HTTP_BAD_PARAMETER,
-                  "'id' needs to be a string");
+                  TRI_ERROR_HTTP_BAD_PARAMETER, "'id' needs to be a string");
     return;
   }
   std::string id = idSlice.copyString();
@@ -4090,16 +4098,15 @@ void RestReplicationHandler::handleCommandCancelHoldReadLockCollection() {
   }
   VPackSlice const body = parsedBody->slice();
   if (!body.isObject()) {
-    generateError(
-        GeneralResponse::ResponseCode::BAD, TRI_ERROR_HTTP_BAD_PARAMETER,
-        "body needs to be an object with attribute 'id'");
+    generateError(GeneralResponse::ResponseCode::BAD,
+                  TRI_ERROR_HTTP_BAD_PARAMETER,
+                  "body needs to be an object with attribute 'id'");
     return;
   }
   VPackSlice const idSlice = body.get("id");
   if (!idSlice.isString()) {
     generateError(GeneralResponse::ResponseCode::BAD,
-                  TRI_ERROR_HTTP_BAD_PARAMETER,
-                  "'id' needs to be a string");
+                  TRI_ERROR_HTTP_BAD_PARAMETER, "'id' needs to be a string");
     return;
   }
   std::string id = idSlice.copyString();
